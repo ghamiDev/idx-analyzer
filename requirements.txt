@@ -1,0 +1,7 @@
+# Dependensi idx-analyzer. Di Termux: numpy & pandas sebaiknya lewat `pkg`
+# (sudah ada wheel terkompilasi untuk Android) — lihat setup-termux.sh.
+# File ini untuk `pip install -r requirements.txt` di mesin biasa / setelah pkg.
+numpy
+pandas
+yfinance
+rich

@@ -1,0 +1,17 @@
+{
+  "watchlist": null,
+  "capital": 3000000,
+  "risk_pct": 1.0,
+  "max_total_risk_pct": 3.0,
+  "max_positions": 5,
+  "entry": 20.0,
+  "flat": 0.0,
+  "ts_mult": 2.5,
+  "gate": true,
+  "top": 15,
+  "rebal": 63,
+  "week_horizon": 5,
+  "week_risk_pct": 5.0,
+  "week_max_pos_pct": 0.9,
+  "week_news_days": 14
+}
