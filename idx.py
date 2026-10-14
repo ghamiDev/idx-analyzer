@@ -586,7 +586,7 @@ def render_kartu(d, best, ns, news, cfg, H):
             else "TUNGGU")
     nplus = sum(1 for x in top if x["bias"] > 0)
     nminus = sum(1 for x in top if x["bias"] < 0)
-    garis = "─" * 60
+    garis = "─" * max(6, ui.avail() - 8)
     kp = [garis,
           f"  AKSI   [bold]{aksi}[/]   harga [bold]{d['close']:,.0f}[/]"
           + (f"   lot {lots}" if aksi.startswith("BUY")

@@ -93,34 +93,141 @@ def header(title, sub=""):
         inner = f"[bold]{title}[/]" + (f"\n[dim]{sub}[/]" if sub else "")
         _c.print(Panel(inner, border_style="cyan", box=box.ROUNDED, padding=(0, 1)))
     else:
-        print(f"\n┌{'─' * 60}")
+        w = max(20, min(avail() - 2, 60))
+        print(f"\n┌{'─' * w}")
         print(f"│ {_strip(title)}")
         if sub:
             print(f"│   {_strip(sub)}")
-        print(f"└{'─' * 60}")
+        print(f"└{'─' * w}")
+
+
+
+def _dw(s):
+    """Lebar tampilan teks setelah markup dibuang (untuk memutuskan tabel vs rekaman)."""
+    return len(_strip(s))
+
+
+def avail():
+    """Lebar kolom efektif = lebar yang benar-benar dipakai rich untuk membungkus.
+
+    Console sudah membaca ukuran terminal asli (Termux ikut) dan sudah memakai IDX_UI_WIDTH
+    saat dibangun, jadi nilainya diambil dari sana supaya pembungkusan & pengukuran sepakat.
+    """
+    if HAS_RICH:
+        try:
+            return max(24, int(_c.width))
+        except Exception:
+            pass
+    env = os.environ.get("IDX_UI_WIDTH")
+    if env:
+        try:
+            return max(24, int(env))
+        except ValueError:
+            pass
+    try:
+        return max(24, os.get_terminal_size().columns)
+    except Exception:
+        return 80
+
+
+def _natural(headers, rows, i, fixed=None):
+    w = _dw(headers[i])
+    for r in rows:
+        if i < len(r):
+            w = max(w, _dw(r[i]))
+    return max(w, fixed) if fixed else w
+
+
+def _records(headers, rows, caption):
+    """Tata letak sempit: tiap baris jadi blok, kolom sisanya dipacking per baris. Tidak pernah terpotong."""
+    W = avail() - 2
+    if caption:
+        _c.print(f"[dim]{_strip(caption)}[/]")
+    for r in rows:
+        cells = [str(x) for x in r]
+        _c.print(f"[bold]> {cells[0] if cells else ''}[/]")
+        line = ""
+        for h, v in zip(headers[1:], cells[1:]):
+            if not _dw(v):
+                continue                              # kolom kosong: jangan dicetak sebagai label menggantung
+            tok = f"[grey62]{_strip(h).lower()}[/] {v}"
+            if line and _dw(line) + _dw(tok) + 5 > W:   # "  ·  " = 5 karakter
+                _c.print(f"  {line}")
+                line = tok
+            else:
+                line = tok if not line else f"{line}  [grey58]·[/]  {tok}"
+        if line:
+            _c.print(f"  {line}")
+
+
+def _longest_word(headers, rows, i):
+    """Lebar terkecil yang masih muat untuk kolom yang boleh dibungkus (kata terpanjang)."""
+    w = 1
+    for t in [_strip(headers[i])] + [_strip(r[i]) for r in rows if i < len(r)]:
+        for tok in str(t).split():
+            w = max(w, len(tok))
+    return w
+
+
+def _render_table(headers, rows, caption, first_w, wrap):
+    t = Table(header_style="bold cyan", caption=caption, box=box.SIMPLE_HEAVY, pad_edge=False,
+              expand=False)
+    for i, h in enumerate(headers):
+        kw = {"no_wrap": i not in wrap, "justify": "left" if i == 0 else "right"}
+        if i in wrap:
+            kw["max_width"] = wrap[i]      # teks panjang turun baris, bukan dipotong "…"
+            kw["overflow"] = "fold"
+        if i == 0 and first_w:
+            kw["min_width"] = first_w      # melebar kalau isi lebih panjang, jangan dipangkas
+        t.add_column(h, **kw)
+    for r in rows:
+        t.add_row(*r)
+    _c.print(t)
 
 
 def table(headers, rows, caption=None, first_w=None):
+    headers = list(headers)
+    rows = [[str(x) for x in r] for r in rows]
     if HAS_RICH:
-        t = Table(header_style="bold cyan", caption=caption, box=box.SIMPLE_HEAVY, pad_edge=False,
-                  expand=False)
-        for i, h in enumerate(headers):
-            kw = {"no_wrap": True, "justify": "left" if i == 0 else "right"}
-            if i == 0 and first_w:
-                kw["width"] = first_w
-            t.add_column(h, **kw)
-        for r in rows:
-            t.add_row(*[str(x) for x in r])
-        _c.print(t)
-    else:
-        clean = [[_strip(x) for x in r] for r in rows]
-        hc = [_strip(h) for h in headers]
-        w = [max(len(hc[i]), *(len(r[i]) for r in clean)) if clean else len(hc[i]) for i in range(len(hc))]
-        if caption:
-            print(f"— {_strip(caption)}")
-        print("  ".join(hc[i].ljust(w[i]) for i in range(len(hc))))
-        for r in clean:
-            print("  ".join(r[i].ljust(w[i]) for i in range(len(r))))
+        n = len(headers)
+        W = avail()
+        natural = [_natural(headers, rows, i, first_w if i == 0 else None) for i in range(n)]
+        pad = 3 * n + 2                    # border + padding per kolom (terukur dari rich)
+        if os.environ.get("IDX_UI_TABLE") == "1":
+            _render_table(headers, rows, caption, first_w, {})
+            return
+        if sum(natural) + pad <= W:        # lapang: tabel rapi, semua sel satu baris
+            _render_table(headers, rows, caption, first_w, {})
+            return
+        # tingkat 2: kolom teks paling lebar dibungkus sampai muat; angka tetap utuh
+        cap = max(10, int(0.14 * W))
+        wrap = {i: max(cap, _longest_word(headers, rows, i)) for i in range(n) if natural[i] > cap}
+        if wrap and sum(min(natural[i], wrap[i]) if i in wrap else natural[i] for i in range(n)) + pad <= W:
+            _render_table(headers, rows, caption, first_w, wrap)
+            return
+        _records(headers, rows, caption)   # terminal sempit: rekaman vertikal, tak ada yang hilang
+        return
+
+    clean = [[_strip(x) for x in r] for r in rows]
+    hc = [_strip(h) for h in headers]
+    W = avail()
+    need = sum(max(_dw(hc[i]), *(len(c[i]) for c in clean)) if clean else _dw(hc[i])
+               for i in range(len(hc))) + 4 * len(hc)
+    if W < need:                      # terminal sempit: daftar vertikal, bukan kolom patah
+        for c in clean:
+            print(f"> {c[0]}")
+            for i in range(1, len(hc)):
+                if i < len(c) and c[i].strip():
+                    print(f"   {hc[i].lower()}: {c[i]}")
+            print("")
+        return
+    w = [max(len(hc[i]), *(len(r[i]) for r in clean)) if clean else len(hc[i]) for i in range(len(hc))]
+    if caption:
+        print(f"— {_strip(caption)}")
+    print("  ".join(hc[i].ljust(w[i]) for i in range(len(hc))))
+    for r in clean:
+        print("  ".join(r[i].ljust(w[i]) for i in range(len(r))))
+
 
 
 def info_panel(title, lines, border="cyan"):
@@ -128,7 +235,7 @@ def info_panel(title, lines, border="cyan"):
         _c.print(Panel("\n".join(lines), title=f"[bold]{title}[/]", border_style=border,
                        box=box.ROUNDED, padding=(0, 1)))
     else:
-        print(f"\n── {_strip(title)} " + "─" * max(0, 50 - len(_strip(title))))
+        print(f"\n── {_strip(title)} " + "─" * max(0, min(avail(), 50) - len(_strip(title)) - 4))
         for l in lines:
             print(_strip(l))
 
@@ -180,7 +287,11 @@ class wait:
 
 
 def progress(label, done, total):
-    """Bar progres satu baris yang ditimpa; label None untuk menutup baris."""
+    """Bar progres satu baris yang ditimpa; label None untuk menutup baris.
+
+    Lebar bar & teks dihitung dari terminal asli agar tidak turun ke baris kedua
+    (baris yang dibungkus menyisakan jelek saat ditimpa dengan \\r).
+    """
     if label is None:
         if _prog[0]:
             _prog[0] = False
@@ -194,21 +305,28 @@ def progress(label, done, total):
     if _prog_t0[0] is None:
         _prog_t0[0] = time.time()
     frac = max(0.0, min(1.0, done / max(total, 1)))
-    n = int(frac * 22)
     el = time.time() - _prog_t0[0]
     eta = el * (total - done) / max(done, 1) if done else 0.0
-    bar = "█" * n + "░" * (22 - n)
-    sisa = f" [dim]≈{eta:.0f}s lagi[/]" if 0 < done < total else ""
-    txt = (f"[cyan]{bar}[/] [bold]{done}/{total}[/] [dim]{el:.0f}s[/]{sisa} "
-           f"[bold]{label}[/] [dim]{frac*100:.0f}%[/]")
+    W = avail()
+    sisa = f" ≈{eta:.0f}s lagi" if 0 < done < total else ""
+    # teks tetap: "done/total el% lbl%" -> sisakan ruang, bar yang menyesuaikan
+    fixed = len(label) + len(sisa) + 22
+    n_full = max(4, min(22, W - fixed))
+    if len(label) + n_full + len(sisa) + 22 > W:      # masih sempit: pendekkan label
+        label = label[:max(8, W - n_full - len(sisa) - 22)]
+    n = int(frac * n_full)
+    bar = "█" * n + "░" * (n_full - n)
+    txt = (f"[cyan]{bar}[/] [bold]{done}/{total}[/] [dim]{el:.0f}s[/]"
+           f"[dim]{sisa}[/] [bold]{label}[/] [dim]{frac*100:.0f}%[/]")
     if HAS_RICH and _c.is_terminal:
         _c.print(txt, end="\r")
         _prog[0] = True
     elif not HAS_RICH and sys.stdout.isatty():
-        plain = f"{done}/{total} {label} {el:.0f}s {frac*100:.0f}%"
-        sys.stdout.write("\r" + plain.ljust(max(60, len(plain)))[:80])
+        plain = f"{bar} {done}/{total} {el:.0f}s{sisa} {label} {frac*100:.0f}%"
+        sys.stdout.write("\r" + plain[:W].ljust(W))
         sys.stdout.flush()
         _prog[0] = True
+
 
 
 def decision_banner(act, why, final_score):

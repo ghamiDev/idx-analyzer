@@ -13,6 +13,7 @@ Perangkat analisis teknikal & pendukung keputusan untuk saham **IDX (Bursa Efek 
 - [Mulai cepat](#mulai-cepat)
 - [Semua mode](#semua-mode)
 - [Konfigurasi (`config.json`)](#konfigurasi-configjson)
+- [Tampilan adaptif (layar sempit / Termux)](#tampilan-adaptif-layar-sempit--termux)
 - [Sumber data & validasi](#sumber-data--validasi)
 - [Cara baca hasil](#cara-baca-hasil)
 - [Metodologi singkat](#metodologi-singkat)
@@ -32,7 +33,7 @@ Perangkat analisis teknikal & pendukung keputusan untuk saham **IDX (Bursa Efek 
 | `portfolio.py` | Status posisi terbuka: P&L, jarak stop/target, aturan keluar, ukuran lot. |
 | `stocknews.py` | Headline Google News RSS per emiten + penanda **umur berita** (segar/basi). |
 | `store.py` | Persistensi: `config.json`, `data/positions.json`, `data/trades.jsonl`, `history.csv`, `reports/`. Semua path relatif ke file ini, `encoding="utf-8"`. |
-| `ui.py` | Terminal UI `rich` berwarna (panel/tabel + spinner). Fallback polos kalau `rich` tak ada / output di-pipe. |
+| `ui.py` | Terminal UI `rich` berwarna (panel/tabel + spinner) dengan **tata letak adaptif** (lihat di bawah). Fallback teks polos kalau `rich` tak ada / output di-pipe. |
 | `requirements.txt` | Daftar dependensi untuk mesin biasa (`pip install -r`). |
 | `setup-termux.sh` | Installer sekali-jalan untuk Termux/Android. |
 
@@ -81,6 +82,8 @@ python idx.py brief
 ```
 
 Kalau `cekdata` menampilkan harga + jam, seluruh mode lain praktis ikut jalan (kode-nya sama, hanya beda data).
+
+**Tampilan tidak perlu disetel.** Lebar terminal Termux dibaca otomatis; tabel yang tidak muat langsung berubah jadi daftar vertikal (rekaman) sehingga angkanya tetap utuh — lihat [Tampilan adaptif](#tampilan-adaptif-layar-sempit--termux). Putar HP ke landscape kalau ingin tetap melihat bentuk tabel.
 
 ---
 
@@ -144,6 +147,25 @@ Ubah lewat CLI: `python idx.py cfg set capital 5000000`.
 
 ---
 
+## Tampilan adaptif (layar sempit / Termux)
+
+Lebar terminal diambil dari `Console` rich — deteksi ukuran terminal asli (Termux ikut), dan `IDX_UI_WIDTH` untuk memaksa. `ui.table()` lalu memilih salah satu dari tiga tata letak sehingga **tidak ada informasi yang terpotong di rasio layar apa pun**:
+
+| Kondisi | Tata letak | Contoh nyata |
+|---------|-----------|--------------|
+| semua kolom muat satu baris | tabel normal | scan/`check` di desktop (≥104 kolom) |
+| hanya kolom teks yang kepanjangan | tabel dengan kolom teks dibungkus (`max_width` + `overflow="fold"`); angka tetap utuh | scan 8 kolom di 80–96 kolom |
+| tetap tidak muat | **rekaman**: tiap baris jadi blok `> <kode>` + pasangan `label nilai` yang dipacking per baris, lipat kalau perlu | ranking `minggu` 11 kolom & `pos` 10 kolom di HP portrait (≤72 kolom) |
+
+Kontrol manual:
+
+- `IDX_UI_WIDTH=<n>` — paksa lebar (kalau auto-detect meleset, atau untuk output yang di-pipe/direkam; default pipe 104).
+- `IDX_UI_TABLE=1` — paksa mode tabel. Hati-hati: kalau memang tidak muat, rich akan memotong sel dengan `…`.
+
+Sudah disapu 24–120 kolom untuk tiga bentuk tabel terberat (scan 8 kolom, berita 6 kolom dengan judul panjang, posisi 10 kolom): 0 baris meluber, 0 nilai hilang. Mode polos tanpa `rich` ikut adaptif (daftar vertikal saat terminal sempit).
+
+---
+
 ## Sumber data & validasi
 
 **Yang terbukti jalan:** Yahoo `v8/finance/chart` — `interval=1m&range=1d` (kutipan berjalan, ±1 mnt lag, membawa kalender sesi 09:00–16:15 WIB) dan `interval=1d` (bar harian). IHSG `^JKSE` dipakai sebagai kalender bursa.
@@ -194,7 +216,7 @@ Skor konfluensi dihitung **walk-forward**: bobot rekalibrasi tiap `rebal` bar me
 |--------|---------------|--------|
 | `simbol tidak menghasilkan data bursa Jakarta` | Nama bentrok dengan sekuritas luar | Pakai ticker IDX yang benar; engine sudah menolak otomatis. |
 | `CERTIFICATE_VERIFY_FAILED` (Termux) | CA belum ada | `pkg install ca-certificates` lalu restart Termux. |
-| Tabel terpotong / layout berantakan | Terminal HP sempit | `export IDX_UI_WIDTH=50` atau putar landscape. |
+| Layout terlihat aneh / angka kurang | Auto-detect lebar terminal meleset | `export IDX_UI_WIDTH=<lebar asli>` (cek dengan `tput cols`). Selain itu sudah otomatis pindah ke tata letak rekaman. |
 | `ModuleNotFoundError: rich` | `rich` belum terpasang | `pip install rich` (kalau tidak, UI jatuh ke mode polos, tetap jalan). |
 | `numpy/pandas` gagal di Termux | Lewat pip, bukan pkg | `pkg install python-numpy python-pandas` (lihat `setup-termux.sh`). |
 | Angka berbeda dari sekuritas | Bar harian belum diselaraskan live | Jalankan `check`/`minggu`/`pos` (jalur keputusan sync live), bukan `scan`. |
