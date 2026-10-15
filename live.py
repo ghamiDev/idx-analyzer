@@ -289,16 +289,26 @@ def _compare(code, q, daily, lookback=4):
     return problems, ok
 
 
+def _ico(name, default=""):
+    try:
+        import ui
+        return ui.ic(name) or default
+    except Exception:
+        return default
+
+
 def mark(q):
     """Satu baris status data untuk header panel."""
+    i = _ico("radar")
+    ico = f"{i} " if i else ""          # ikon di LUAR tag — "[📡 ]" akan dibaca rich sebagai markup
     if not q or q.get("error"):
-        return ("[bold red]STATUS DATA:[/] kutipan live gagal — angka di bawah murni bar harian terakhir "
+        return (f"{ico}[bold red]STATUS DATA:[/] kutipan live gagal — angka di bawah murni bar harian terakhir "
                 "dan mungkin bukan hari ini")
     col = "green" if fresh(q) else "yellow"
     t = f"{q['time']:%d-%m %H:%M}" if q["time"] else "?"
     basi = (" · [bold yellow]cetak terakhir berumur > 10 menit — kemungkinan sumber terlambat[/]"
             if q.get("stale") and "masih berjalan" in q["session"] else "")
-    return (f"[{col}]STATUS DATA:[/] live [bold]{q['price']:,.0f}[/] @ {t} WIB "
+    return (f"{ico}[{col}]STATUS DATA:[/] live [bold]{q['price']:,.0f}[/] @ {t} WIB "
             f"({q['age_min']:.0f} mnt lalu) · {q['session']} · sumber {q['source']}{basi}")
 
 

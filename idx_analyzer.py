@@ -71,7 +71,14 @@ for _s in (sys.stdout, sys.stderr):
 
 PERIOD = "5y"
 HORIZON = 20  # hari bursa ke depan utk evaluasi akurasi
-FEE_ROUNDTRIP = 0.004  # beli ~0,15% + jual ~0,25% (IDX)
+# Biaya nyata per sisi. FEE_ROUNDTRIP dipakai untuk KALIBRASI akurasi (target return bersih),
+# sedangkan simulasi memakai dua sisi terpisah + slippage supaya bisa diuji kepekaannya.
+FEE_BUY = 0.0015    # 0,15% beli
+FEE_SELL = 0.0025   # 0,25% jual (fee + PPh final 0,1% biasanya di sisi jual)
+SLIP = 0.0005       # slippage per sisi: 0,05% ~ 1 tick pada saham Rp1.000-an
+FEE_ROUNDTRIP = FEE_BUY + FEE_SELL
+MAX_POS_PCT = 0.20    # porsi maksimum satu posisi pada backtest portofolio
+MAX_VOL_PCT = 0.01    # tidak boleh masuk di atas 1% nilai transaksi harian saham itu
 TRAIN_FRAC = 0.7
 
 # ---------------------------------------------------------------- data
@@ -376,7 +383,8 @@ def cmd_analyze(ticker, rebal=63, entry=20.0, ts_mult=2.5):
         f"Ukuran posisi utk modal {d['capital']:,.0f} / risiko {d['risk_pct']}%: lihat "
         f"[bold]idx.py check {ticker}[/]."], border="magenta")
     ui.info_panel("CARA BACA", [
-        "· Tiap metode memberi sinyal [green]▲ BELI[/] / [red]▼ JUAL[/] / [grey62]— netral[/]; skor adalah "
+        f"· Tiap metode memberi sinyal [green]{ui.ic('up')} BELI[/] / [red]{ui.ic('down')} JUAL[/] / "
+        "[grey62]— netral[/]; skor adalah "
         "rata-rata berbobot akurasi luar-sampel tiap metode (dikalibrasi ulang tiap 63 bar), lalu digeser "
         "kondisi pasar & sektor.",
         "· [bold]bobot%[/] = kontribusi metode pada skor. Metode berbobot kecil tapi searah = konfirmator, "
@@ -397,7 +405,7 @@ LQ45 = ["BBCA.JK","BBRI.JK","BMRI.JK","BBNI.JK","BRIS.JK","TLKM.JK","ISAT.JK","T
 
 UNIVERSE = list(LQ45)
 
-def compute_scan(tickers=None, ms=None, quiet=False, rebal=63, horizon=None, thresh=20.0):
+def compute_scan(tickers=None, ms=None, rebal=63, horizon=None, thresh=20.0):
     """Skor mentah + akhir tiap saham di universe — memakai `snapshot` yang sama dgn mode keputusan.
 
     `horizon` diisi (mis. 5 utk mode mingguan) → skor dikalibrasi utk horison itu dan tiap baris
@@ -424,8 +432,7 @@ def compute_scan(tickers=None, ms=None, quiet=False, rebal=63, horizon=None, thr
             pass
         except Exception as e:
             print(f"  skip {t}: {e}", file=sys.stderr)
-        if not quiet:
-            ui.progress(f"memindai {t}", i, len(tickers))
+        ui.progress(f"memindai {t}", i, len(tickers))
     ui.progress(None, len(tickers), len(tickers))
     out.sort(key=lambda r: -r["final"])
     return out, ms
@@ -504,21 +511,68 @@ def index_gate():
     idx.index = pd.to_datetime(idx.index).tz_localize(None)
     return idx > idx.ewm(span=200, adjust=False).mean()
 
-def simulate_positions(sim, c, atrn, g, entry=20.0, flat=0.0, ts_mult=2.5, min_hold=5):
+def _side_costs(fee_in=None, fee_out=None):
+    return (FEE_BUY + SLIP if fee_in is None else fee_in,
+            FEE_SELL + SLIP if fee_out is None else fee_out)
+
+
+def _mk_trade(idx, i0, i1, px_in, px_out, risk_frac, reason, fee_in, fee_out, open_pos=False):
+    gross = px_out / px_in - 1
+    return {"date_in": idx[i0], "date_out": idx[i1], "px_in": px_in, "px_out": px_out,
+            "hold": i1 - i0 + 1, "reason": reason, "gross": gross,
+            "net": gross - fee_in - fee_out, "risk_frac": risk_frac, "open": open_pos}
+
+
+def simulate_trades(sim, c, atrn, g, entry=20.0, flat=0.0, ts_mult=2.5, min_hold=5,
+                    fee_in=None, fee_out=None):
+    """Bar posisi + daftar transaksi lengkap (tanggal, harga, hold, alasan keluar, P&L bersih).
+
+    Konvensi tetap sama seperti sebelumnya: posisi dihitung dari close bar sinyal, return
+    baru berjalan di bar berikutnya (eksekusi H+1). Biaya masuk dan keluar dipotong terpisah
+    supaya bisa diuji kepekaannya sendiri-sendiri.
+    """
+    fi, fo = _side_costs(fee_in, fee_out)
     p, peak, age, streak = 0, np.nan, 0, 0
-    pos = []
+    i0 = px_in = risk_frac = None
+    pos, trades = [], []
     for i in range(len(sim)):
         v, px, a = float(sim.iloc[i]), float(c.iloc[i]), float(atrn.iloc[i])
         streak = streak + 1 if v >= entry else 0
         if p == 1:
             peak = max(peak, px)
             age += 1
-            if (age >= min_hold and v <= flat) or px < peak * (1 - ts_mult * a):
+            ts_hit = px < peak * (1 - ts_mult * a)
+            if (age >= min_hold and v <= flat) or ts_hit:
+                trades.append(_mk_trade(c.index, i0, i, px_in, px, risk_frac,
+                                        "trailing stop" if ts_hit else "skor turun", fi, fo))
                 p, age = 0, 0
         if p == 0 and streak >= 2 and g[i]:
             p, peak, age = 1, px, 1
+            i0, px_in, risk_frac = i, px, ts_mult * a
         pos.append(p)
-    return pd.Series(pos, index=sim.index)
+    if p == 1:
+        trades.append(_mk_trade(c.index, i0, len(sim) - 1, px_in, float(c.iloc[-1]), risk_frac,
+                                "masih terbuka", fi, fo, open_pos=True))
+    return pd.Series(pos, index=sim.index), trades
+
+
+def simulate_positions(sim, c, atrn, g, entry=20.0, flat=0.0, ts_mult=2.5, min_hold=5):
+    """Hanya bar posisinya — dipakai snapshot/scanner yang tidak butuh daftar trade."""
+    return simulate_trades(sim, c, atrn, g, entry, flat, ts_mult, min_hold)[0]
+
+
+def strategy_returns(pos, c, fee_in=None, fee_out=None):
+    """Return harian strategi dari bar posisi: potong biaya masuk di bar masuk, keluar di bar keluar."""
+    fi, fo = _side_costs(fee_in, fee_out)
+    d = pos.diff().fillna(pos.iloc[0])
+    return pos.shift(1).fillna(0) * c.pct_change().fillna(0) - fi * (d > 0) - fo * (d < 0)
+
+
+def adv_rupiah(df, n=20):
+    """Perkiraan nilai transaksi harian (rupiah) — dasar cap likuiditas backtest portofolio."""
+    if "Volume" not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+    return (df["Close"] * df["Volume"].fillna(0)).rolling(n).median()
 
 def trade_stats(pos, c):
     runs, s = [], None
@@ -545,39 +599,18 @@ def snapshot(ticker, rebal=63, horizon=None, with_live=False):
     Dipakai compute_scan (scanner), decide (keputusan), portfolio (pemantauan) dan cmd_analyze,
     sehingga skor yang tampil di scanner = skor yang dipakai menghitung ukuran posisi.
     `horizon` = hari bursa ke depan yang jadi patokan akurasi bobot (default 20; mode minggu pakai 5).
-    `with_live=True` → pakai kutipan real-time bila bar harian belum ada hari ini, plus hasil
-    validasi silang (`live`, `cek`) di dict hasilnya.
+    `with_live=True` hanya mengubah [harga yang dipakai untuk ukuran posisi] (`close`), TIDAK
+    mengubah bar yang dipakai menghitung skor — jadi angka SKOR di scanner, `check`, `pos`, dan
+    `minggu` selalu sama. Kutipan yang lebih baru dari bar harian dilaporkan lewat `live_ahead`.
     """
     H = horizon or HORIZON
     df = load(ticker)
     q = cek = None
+    live_px = None
     if with_live and live:
         q = live.quote(ticker)
         if not q.get("error") and q["price"] is not None and q["time"]:
-            last = df.index[-1].date()
-            if q["time"].date() > last and abs(q["price"] - float(df.Close.iloc[-1])) > 0.5:
-                # bar harian sumber belum berisi hari ini → susuli dengan kutipan live
-                cols = [c for c in ("Open", "High", "Low", "Close", "Volume", "Adj Close") if c in df.columns]
-                val = {"Open": q["day_open"] or q["price"], "High": q["day_high"] or q["price"],
-                       "Low": q["day_low"] or q["price"], "Close": q["price"],
-                       "Volume": q["volume"] or 0, "Adj Close": q["price"]}
-                new = pd.DataFrame([[val.get(c, np.nan) for c in cols]],
-                                   index=[pd.Timestamp(dt.datetime.combine(q["time"].date(), dt.time(9, 0)))],
-                                   columns=cols)
-                df = pd.concat([df, new])
-            elif q["time"].date() == last:
-                # bar hari ini sudah ada tapi isinya setua unduhan terakhir — tempelkan kutipan
-                # live supaya stop/target/ukuran dihitung dari harga yang benar-benar tercetak
-                i = df.index[-1]
-                df = df.copy()
-                px = float(q["price"])
-                df.loc[i, "Close"] = px
-                if q.get("day_high") is not None:
-                    df.loc[i, "High"] = max(float(q["day_high"]), px)
-                if q.get("day_low") is not None:
-                    df.loc[i, "Low"] = min(float(q["day_low"]), px)
-                if q.get("volume"):
-                    df.loc[i, "Volume"] = float(q["volume"])
+            live_px = float(q["price"])
         try:
             cek = live.crosscheck(ticker, df)
         except Exception as e:  # noqa: BLE001
@@ -591,8 +624,12 @@ def snapshot(ticker, rebal=63, horizon=None, with_live=False):
     g_ser = index_gate().reindex(c.index, method="ffill").fillna(False)
     atrn = (atr(df) / df.Close).loc[sim.index]
     pos = simulate_positions(sim, c, atrn, g_ser.to_numpy())
-    pxl, a = float(df.Close.iloc[-1]), float(atr(df).iloc[-1])
+    bar_close = float(df.Close.iloc[-1])
+    pxl = live_px if live_px is not None else bar_close
+    a = float(atr(df).iloc[-1])
     raw = float(sim.iloc[-1])
+    ahead = bool(q and not q.get("error") and q.get("time") and live_px is not None
+                 and q["time"].date() > df.index[-1].date())
     adx_now, chop_now = float(reg["ADX"].iloc[-1]), float(reg["CHOP"].iloc[-1])
     regime = ("trending" if (adx_now >= 20 and chop_now < 38.2)
               else "choppy" if chop_now >= 61.8 else "netral")
@@ -602,13 +639,69 @@ def snapshot(ticker, rebal=63, horizon=None, with_live=False):
     return {"ticker": ticker, "df": df, "sig": sig, "sim": sim, "c": c, "pos": pos,
             "weights": w_last or {}, "w_total": tot, "raw": raw,
             "conf": agr / tot * 100 if tot and raw != 0 else 0.0,
-            "close": pxl, "atr": a, "atr_pct": a / pxl * 100, "adx": adx_now, "chop": chop_now,
+            "close": pxl, "bar_close": bar_close, "live_px": live_px, "live_ahead": ahead,
+            "atr": a, "atr_pct": a / pxl * 100, "adx": adx_now, "chop": chop_now,
             "regime": regime, "gate": bool(g_ser.iloc[-1]), "gate_series": g_ser,
             "holding": int(pos.iloc[-1]) == 1, "stats": trade_stats(pos, c),
             "date": str(df.index[-1].date()), "atrn": atrn, "horizon": H,
             "live": q, "cek": cek}
 
-def cmd_backtest(ticker, entry=20.0, flat=0.0, rebal=63, ts_mult=2.5, gate=True):
+def perf(strat, pos=None, c=None):
+    """Ringkasan kinerja dari return harian — dipakai backtest tunggal, uji peka, dan portofolio."""
+    eq = (1 + strat).cumprod()
+    yrs = max(len(strat) / 252, 1e-9)
+    out = {"eq": eq, "ret": float(eq.iloc[-1] - 1), "cagr": float(eq.iloc[-1] ** (1 / yrs) - 1),
+           "dd": float((eq / eq.cummax() - 1).min()),
+           "sharpe": float(strat.mean() / (strat.std() or 1) * np.sqrt(252)), "yrs": yrs}
+    if pos is not None:
+        out["exposure"] = float(pos.mean())
+    if c is not None:
+        bh = c / c.iloc[0]
+        out.update(bh_ret=float(bh.iloc[-1] - 1), bh_cagr=float(bh.iloc[-1] ** (1 / yrs) - 1),
+                   bh_dd=float((bh / bh.cummax() - 1).min()), bh_eq=bh)
+    return out
+
+
+def _fmt_pct(v, good=None):
+    s = f"{v * 100:+.1f}%"
+    if good is None:
+        return s
+    return f"[{'green' if v >= good else 'red'}]{s}[/]"
+
+
+def trade_rows(tr, last=12):
+    """Baris tabel transaksi: harga dibulatkan ke tick, P&L sudah bersih dari biaya dua sisi."""
+    rows = []
+    for t in tr[-last:]:
+        rows.append([t["date_in"].strftime("%Y-%m-%d"),
+                     t["date_out"].strftime("%Y-%m-%d") + ("*" if t["open"] else ""),
+                     f"{t['hold']}", f"{t['px_in']:,.0f}", f"{t['px_out']:,.0f}",
+                     _fmt_pct(t["net"], 0), t["reason"]])
+    return rows
+
+
+def trade_summary(tr):
+    if not tr:
+        return "Tidak ada satu pun transaksi pada rentang ini."
+    done = [t for t in tr if not t["open"]]
+    win = sum(1 for t in done if t["net"] > 0) / max(len(done), 1)
+    avg = float(np.mean([t["net"] for t in done])) if done else 0.0
+    best = max((t["net"] for t in tr), default=0.0)
+    worst = min((t["net"] for t in tr), default=0.0)
+    hold = float(np.median([t["hold"] for t in tr]))
+    alasan = {}
+    for t in done:
+        alasan[t["reason"]] = alasan.get(t["reason"], 0) + 1
+    urut = sorted(alasan.items(), key=lambda kv: -kv[1])
+    return (f"[bold]{len(tr)}[/] transaksi · menang [bold]{win*100:.0f}%[/] dari "
+            f"{len(done)} yang tertutup · median hold [bold]{hold:.0f}[/] hari · "
+            f"rata-rata bersih [bold]{avg*100:+.1f}%[/] · terbaik {best*100:+.1f}% / "
+            f"terburuk {worst*100:+.1f}% · keluar karena "
+            + ", ".join(f"{k} ×{v}" for k, v in urut))
+
+
+def cmd_backtest(ticker, entry=20.0, flat=0.0, rebal=63, ts_mult=2.5, gate=True,
+                 fee_in=None, fee_out=None, slip=None, show_trades=12):
     df = load(ticker)
     sig, _ = build_signals(df)
     comp, w_last = walkforward_scores(df, sig, rebal)
@@ -618,45 +711,45 @@ def cmd_backtest(ticker, entry=20.0, flat=0.0, rebal=63, ts_mult=2.5, gate=True)
     c = df.Close.loc[sim.index]
     atrn = (atr(df) / df.Close).loc[sim.index]
     g = index_gate().reindex(c.index, method="ffill").fillna(False).to_numpy() if gate else np.ones(len(c), bool)
-    ret = c.pct_change().fillna(0)
-    pos = simulate_positions(sim, c, atrn, g, entry, flat, ts_mult)
-    trades = int((pos.diff() == 1).sum() + (pos.iloc[0] == 1))
-    turn = pos.diff().abs().fillna(pos.iloc[0])
-    strat = pos.shift(1).fillna(0) * ret - FEE_ROUNDTRIP * turn
-    eq = (1 + strat).cumprod()
-    bh = c / c.iloc[0]
-    yrs = len(c) / 252
-    def cagr(e_): return e_.iloc[-1] ** (1 / yrs) - 1
-    dd = (eq / eq.cummax() - 1).min()
-    bhd = (bh / bh.cummax() - 1).min()
-    sharpe = strat.mean() / (strat.std() or 1) * np.sqrt(252)
+    fi, fo = _side_costs(fee_in, fee_out)
+    pos, tr = simulate_trades(sim, c, atrn, g, entry, flat, ts_mult, fee_in=fi, fee_out=fo)
+    p = perf(strategy_returns(pos, c, fi, fo), pos, c)
+    eq, bh = p["eq"], p["bh_eq"]
+    yrs = p["yrs"]
     ui.header(f"BACKTEST WALK-FORWARD {ticker}",
               f"{sim.index[0].date()} → {sim.index[-1].date()} · {len(sim)} bar ({yrs:.1f} th) · "
               f"rekalibrasi bobot tiap {rebal} bar")
     atur = (f"[bold]Aturan:[/] LONG skor ≥ [green]{entry:+.0f}[/] 2 hari berturut"
             f"{' DAN [cyan]IHSG>EMA200[/]' if gate else ''}; keluar saat skor ≤ [red]{flat:+.0f}[/] "
-            f"(min. hold 5 hari) ATAU trailing stop [red]{ts_mult}×ATR[/]; eksekusi H+1; "
-            f"fee [dim]{FEE_ROUNDTRIP*100:.2f}%[/].")
+            f"(min. hold 5 hari) ATAU trailing stop [red]{ts_mult}×ATR[/]; eksekusi H+1.")
+    sl = SLIP if slip is None else slip
+    biaya = (f"[bold]Biaya:[/] masuk [dim]{fi*100:.2f}%[/] + keluar [dim]{fo*100:.2f}%[/] per posisi "
+             f"(total [bold]{(fi+fo)*100:.2f}%[/], sudah termasuk slippage "
+             f"[dim]{sl*100:.2f}%[/] per sisi). Ubah: [bold]idx.py cfg set slip_pct 0.2[/].")
     lolos = ("Metode lolos edge-minimum (kalibrasi terakhir, "
              f"{len(w_last or {})}): [bold]" + ", ".join(sorted((w_last or {}).keys(), key=lambda k: -w_last[k])[:6]) + "[/]")
-    ui.info_panel("ATURAN SIMULASI", [atur, "", lolos], "cyan")
-    def _d(v, unit="%", good=None):
-        s = f"{v:+.1f}{unit}"
-        if good is None:
-            return s
-        return f"[{'green' if v >= good else 'red'}]{s}[/]"
+    ui.info_panel("ATURAN SIMULASI", [atur, biaya, "", lolos], "cyan")
     rel = (eq.iloc[-1] - bh.iloc[-1]) * 100
     rows = [
-        ["Return total", _d((eq.iloc[-1]-1)*100, good=0), _d((bh.iloc[-1]-1)*100), f"{rel:+.1f}%"],
-        ["CAGR", _d(cagr(eq)*100, good=0), _d(cagr(bh)*100, good=0),
-         _d((cagr(eq)-cagr(bh))*100, good=0)],
-        ["Max drawdown", f"[red]{dd*100:.1f}%[/]", f"[red]{bhd*100:.1f}%[/]",
-         "[green]lebih dangkal[/]" if dd > bhd else "[red]lebih dalam[/]"],
-        ["Exposure", f"{pos.mean()*100:.1f}%", "100.0%", ""],
-        ["Jumlah entry", f"[bold]{trades}[/]", "1", ""],
-        ["Sharpe", f"[bold]{sharpe:.2f}[/]", "", ""],
+        ["Return total", _fmt_pct(p["ret"], 0), _fmt_pct(p["bh_ret"]), f"{rel:+.1f}%"],
+        ["CAGR", _fmt_pct(p["cagr"], 0), _fmt_pct(p["bh_cagr"]),
+         _fmt_pct(p["cagr"] - p["bh_cagr"], 0)],
+        ["Max drawdown", f"[red]{p['dd']*100:.1f}%[/]", f"[red]{p['bh_dd']*100:.1f}%[/]",
+         "[green]lebih dangkal[/]" if p["dd"] > p["bh_dd"] else "[red]lebih dalam[/]"],
+        ["Exposure", f"{p['exposure']*100:.1f}%", "100.0%", ""],
+        ["Jumlah entry", f"[bold]{len(tr)}[/]", "1", ""],
+        ["Sharpe", f"[bold]{p['sharpe']:.2f}[/]", "", ""],
     ]
-    ui.table(["METRIK", "STRATEGI", "BUY & HOLD", "SELISIH"], rows, caption="long-only + gerbang rezim, fee PP dipotong")
+    ui.table(["METRIK", "STRATEGI", "BUY & HOLD", "SELISIH"], rows,
+             caption="long-only + gerbang rezim, biaya dua sisi dipotong")
+    ui.info_panel(f"TRANSAKSI ({min(len(tr), show_trades)} terakhir dari {len(tr)})",
+                  [trade_summary(tr), "",
+                   "Tabel berikutnya: tanggal masuk → keluar, harga, P&L bersih, alasan keluar."],
+                  "magenta")
+    if tr:
+        ui.table(["MASUK", "KELUAR", "HOLD", "HARGA MASUK", "HARGA KELUAR", "P&L BERSIH", "ALASAN KELUAR"],
+                 trade_rows(tr, show_trades),
+                 caption="* = masih terbuka sampai bar terakhir")
     cur = float(sim.iloc[-1])
     curpos = "[green]LONG[/]" if pos.iloc[-1] else "[grey62]FLAT[/]"
     eq12 = eq.resample("QE").last().iloc[-8:]
@@ -668,13 +761,362 @@ def cmd_backtest(ticker, entry=20.0, flat=0.0, rebal=63, ts_mult=2.5, gate=True)
     ], "magenta")
     ui.info_panel("CARA BACA", [
         "· Bobot metode dihitung ulang tiap kuartal hanya dari data yang sudah lewat — tidak ada masa depan "
-        "yang intip; hasil tetap optimistis karena asumsi eksekusi ideal & likuiditas.",
-        "· [bold]SELISIH[/] positif bukan berarti alfa: dengan exposure ~10% strategi hanya harus lebih kecil "
-        "rugi dibanding buy & hold. Manfaat utamanya di [bold]drawdown[/], bukan return.",
+        "yang intip. Biaya dua sisi sudah dipotong, tapi eksekusi masih diidealkan: harga penutupan pas, "
+        "tanpa gap intraday, order selalu terisi.",
+        "· [bold]SELISIH[/] positif bukan berarti alfa: dengan exposure rendah strategi hanya harus lebih "
+        "kecil rugi dibanding buy & hold. Manfaat utamanya di [bold]drawdown[/], bukan return.",
         "· [bold]Exposure rendah[/] = sistem lebih sering diam; itu disengaja (gerbang rezim + ambang skor). "
         "Sharpe < 0 berarti periode ini tidak ramah untuk strategi long-only.",
-        "· Uji kepekaan sebelum percaya: ubah [bold]--entry --flat --ts --rebal[/] dan [bold]--nogate[/]; "
-        "jika hasil hanya bagus pada satu set angka, itu overfit."], "cyan")
+        "· Kolom ALASAN KELUAR menunjukkan aturan mana yang benar-benar bekerja: kalau hampir semua keluar "
+        "karena trailing stop, disiplin keluar itulah sumber utamanya — bukan kemampuan memilih arah.",
+        "· Jangan percaya satu set angka: jalankan [bold]idx.py peka "
+        f"{ticker.replace('.JK','')}[/] untuk menguji seluruh grid ambang & stop."], "cyan")
+
+
+def cmd_backtest_portfolio(res, cfg, show_trades=15):
+    """Render hasil portfolio_backtest(): ekuitas bersama, rebutan slot, cap likuiditas."""
+    d, eq, bh = res["dates"], res["eq"], res["bh"]
+    ui.header(f"BACKTEST PORTOFOLIO ({res['legs']} SAHAM)",
+              f"{d[0].date()} → {d[-1].date()} · {len(d)} bar ({res['yrs']:.1f} th) · "
+              f"modal awal Rp {res['capital']:,.0f}")
+    atur = (f"[bold]Aturan rebutan modal:[/] skor ≥ [green]{cfg['entry']:+.0f}[/] 2 hari berturut "
+            f"{'DAN gerbang IHSG>EMA200 terbuka' if cfg['gate'] else 'tanpa gerbang rezim'}; "
+            f"keluar saat skor ≤ [red]{cfg['flat']:+.0f}[/] (min. hold 5 hari) atau trailing stop "
+            f"[red]{cfg['ts_mult']}×ATR[/]. Maksimum [bold]{cfg['max_positions']}[/] posisi bersamaan, "
+            f"risiko per posisi [bold]{cfg['risk_pct']}%[/] ekuitas berjalan.")
+    batas = (f"[bold]Cap ukuran posisi:[/] paling besar [bold]{cfg['max_pos_pct']:.0f}%[/] ekuitas dan "
+             f"[bold]{cfg['max_volume_pct']:.1f}%[/] nilai transaksi harian saham itu (ADV 20 hari). "
+             f"Sinyal yang tidak kebagian uang/slot dicatat sebagai [bold]ditolak[/], bukan dihapus.")
+    biaya = (f"[bold]Biaya:[/] masuk [dim]{cfg['fee_buy_pct']:.2f}%[/] + keluar "
+             f"[dim]{cfg['fee_sell_pct']:.2f}%[/] + slippage [dim]{cfg['slip_pct']:.2f}%[/] per sisi · "
+             f"total terbayar pada simulasi ini [bold]Rp {res['fees']:,.0f}[/].")
+    ui.info_panel("ATURAN SIMULASI", [atur, batas, "", biaya], "cyan")
+    rel = (res["ret"] - res["bh_ret"]) * 100
+    rows = [
+        ["Return total", _fmt_pct(res["ret"], 0), _fmt_pct(res["bh_ret"]), f"{rel:+.1f}%"],
+        ["CAGR", _fmt_pct(res["cagr"], 0), "", ""],
+        ["Max drawdown", f"[red]{res['dd']*100:.1f}%[/]", f"[red]{res['bh_dd']*100:.1f}%[/]",
+         "[green]lebih dangkal[/]" if res["dd"] > res["bh_dd"] else "[red]lebih dalam[/]"],
+        ["Exposure", f"{res['exposure']*100:.1f}%", "100.0%", "bar dengan ≥1 posisi"],
+        ["Sharpe", f"[bold]{res['sharpe']:.2f}[/]", "", ""],
+        ["Posisi dibuka / ditolak", f"[bold]{res['taken']}[/] / {res['rejected']}", "", ""],
+    ]
+    ui.table(["METRIK", "PORTOFOLIO", "BELI SEMUA (samaan bobot)", "SELISIH"], rows,
+             caption="kolom pembanding adalah sama rata 1/N dari saham yang sama — bukan IHSG")
+    if "ihsg_ret" in res:
+        ui.info_panel("PEMBANDING PASAR", [
+            f"· IHSG pada periode yang sama: return [bold]{res['ihsg_ret']*100:+.1f}%[/], "
+            f"max drawdown [bold]{res['ihsg_dd']*100:.1f}%[/].",
+            "· Kalau portofolio kalah dari IHSG dengan drawdown yang tidak lebih dangkal, "
+            "sebaiknya beli indeks saja."], "magenta")
+    tolak = [f"[bold]{res['cap_slot']}[/] karena slot penuh ({cfg['max_positions']} posisi)",
+             f"[bold]{res['cap_pos']}[/] karena batas {cfg['max_pos_pct']:.0f}% ekuitas",
+             f"[bold]{res['cap_liq']}[/] karena cap likuiditas {cfg['max_volume_pct']:.1f}% ADV",
+             f"[bold]{res['cap_cash']}[/] karena uang tunai tidak cukup (min. 1 lot)"]
+    cash_bound = res["cap_cash"] >= max(res["taken"], 1)
+    ui.info_panel("SAAT SINYAL DITOLAK", [
+        "Sinyal beli yang muncul tapi tidak bisa dieksekusi tetap dihitung — itu harga dari aturan "
+        "ukuran posisi yang ketat:",
+        "· " + "\n· ".join(tolak),
+        "",
+        ("[yellow]Pola yang terlihat:[/] penolakan terbesar adalah 'tidak cukup uang tunai'. Itu batasan "
+         "modal, bukan sinyal yang buruk — dengan modal sekecil ini, satu lot sudah memakan porsi besar "
+         "portofolio sehingga aturan risiko per posisi tidak bisa dipenuhi. Kurangi daftar saham, naikkan "
+         "modal, atau pegang beberapa saham pilihan saja."
+         if cash_bound else ""),
+        "[grey62]Kalau 'slot penuh' mendominasi, sistem menghasilkan sinyal lebih banyak daripada yang "
+        "bisa ditampung modal; urutan antrean mengikuti daftar ticker, jadi hasilnya sedikit bergantung "
+        "pada urutan itu.[/]"],
+        "yellow")
+    per = {}
+    for t in res["trades"]:
+        p = per.setdefault(t["ticker"], {"n": 0, "win": 0, "ret": 0.0, "not": 0.0})
+        p["n"] += 1
+        p["win"] += 1 if t["ret"] > 0 else 0
+        p["ret"] += t["ret"]
+        p["not"] += t["notional"]
+    if per:
+        tak_kebagian = [t for t in res["tickers"] if t not in per]
+        ui.table(["SAHAM", "TRADE TERTUTUP", "MENANG", "RATA-RATA P&L", "MODAL DIPAKAI"],
+                 [[t, f"{v['n']}", f"{v['win']/v['n']*100:.0f}%", _fmt_pct(v["ret"] / v["n"], 0),
+                   f"Rp {v['not']:,.0f}"] for t, v in
+                  sorted(per.items(), key=lambda kv: -kv[1]["ret"] / kv[1]["n"])],
+                 caption="hanya posisi yang benar-benar dieksekusi oleh scheduler; modal dipakai = total "
+                         "nilai beli sepanjang periode"
+                         + (f" · tidak pernah kebagian: {', '.join(tak_kebagian)}"
+                            if tak_kebagian else ""))
+    if res["trades"]:
+        ui.table(["SAHAM", "MASUK", "KELUAR", "HOLD", "MODAL", "P&L BERSIH", "ALASAN KELUAR"],
+                 [[t["ticker"], t["in"].strftime("%Y-%m-%d"), t["out"].strftime("%Y-%m-%d"),
+                   f"{t['hold']}", f"Rp {t['notional']:,.0f}", _fmt_pct(t["ret"], 0), t["reason"]]
+                  for t in res["trades"][-show_trades:]],
+                 caption=f"{min(len(res['trades']), show_trades)} terakhir dari "
+                         f"{len(res['trades'])} posisi tertutup")
+    eq_q = eq.resample("QE").last().iloc[-8:]
+    ui.info_panel("EKUITAS PER KUARTAL", [
+        "  " + "  ".join(f"[cyan]{x.year % 100}Q{(x.month - 1) // 3 + 1}:[/] [bold]{v:,.0f}[/]"
+                         for x, v in eq_q.items()),
+        f"· Akhir: [bold]Rp {eq.iloc[-1]:,.0f}[/] dari Rp {res['capital']:,.0f} "
+        f"({_fmt_pct(res['ret'], 0)})."], "magenta")
+    ui.info_panel("CARA BACA", [
+        "· Nilai utama backtest portofolio ada di [bold]drawdown[/] dan [bold]exposure[/], bukan di "
+        "return: modal yang terbagi ke beberapa saham seharusnya meratakan guncangan.",
+        "· [bold]Ditolak[/] bukan bug — itu konsekuensi wajar dari membatasi risiko. Tapi kalau "
+        "persentase penolakannya tinggi, artinya aturanmu terlalu ketat untuk jumlah saham segitu.",
+        "· Saham yang sama bisa muncul beberapa kali di daftar 'ditolak' pada hari berbeda; antrean "
+        "diproses mengikuti urutan daftar ticker, jadi hasilnya sedikit bergantung pada urutan itu.",
+        "· Semua asumsi masih optimistis: dieksekusi di harga penutupan, tanpa gap intraday, "
+        "tanpa batas harga (auto-rejection), dan tanpa T+2 yang menahan uang.",
+        "· [bold]Uji peka[/] konfigurasi ini sebelum percaya: jalankan "
+        f"[bold]idx.py peka {res['tickers'][0].replace('.JK','')}[/]."], "cyan")
+
+
+def _sim_window(df, sig, rebal, gate_series):
+    """Skor walk-forward + close + ATR normal + gate pada jendela yang sama (buang NaN awal)."""
+    comp, _ = walkforward_scores(df, sig, rebal)
+    sim = comp.dropna()
+    if len(sim) < 120:
+        return None
+    c = df.Close.loc[sim.index]
+    atrn = (atr(df) / df.Close).loc[sim.index]
+    g = gate_series.reindex(sim.index, method="ffill").fillna(False).to_numpy()
+    return sim, c, atrn, g
+
+
+GRID_ENTRY = (10.0, 15.0, 20.0, 25.0, 30.0)
+GRID_TS = (2.0, 2.5, 3.0)
+GRID_REBAL = (42, 63, 84)
+
+
+def sweep(ticker, entries=GRID_ENTRY, tss=GRID_TS, rebals=GRID_REBAL, flat=0.0, gate=True,
+          fee_in=None, fee_out=None):
+    """Uji kepekaan: seluruh kombinasi ambang × trailing stop × jarak kalibrasi pada data yang sama.
+
+    Skor walk-forward dihitung satu kali per `rebal` (bagian mahalnya), sisanya hanya mensimulasi
+    ulang aturan masuk/keluar — jadi 45 kombinasi tetap selesai dalam hitungan detik.
+    """
+    df = load(ticker)
+    sig, _ = build_signals(df)
+    gs = index_gate() if gate else pd.Series(True, index=df.index)
+    out = []
+    for rebal in rebals:
+        w = _sim_window(df, sig, rebal, gs)
+        if not w:
+            continue
+        sim, c, atrn, g = w
+        for e in entries:
+            for ts in tss:
+                pos, tr = simulate_trades(sim, c, atrn, g, e, flat, ts, fee_in=fee_in, fee_out=fee_out)
+                p = perf(strategy_returns(pos, c, fee_in, fee_out), pos, c)
+                out.append({"rebal": rebal, "entry": e, "ts": ts, "trades": len(tr),
+                            "exposure": p["exposure"], "ret": p["ret"], "cagr": p["cagr"],
+                            "dd": p["dd"], "sharpe": p["sharpe"], "bh_ret": p["bh_ret"],
+                            "bh_dd": p["bh_dd"], "start": sim.index[0], "end": sim.index[-1]})
+    return out
+
+
+def sweep_verdict(rows, cur=None):
+    """Kesimpulan grid: berapa banyak kombinasi yang masih lebih aman dari buy & hold."""
+    if not rows:
+        return {"n": 0}
+    dd_win = [r for r in rows if r["dd"] > r["bh_dd"]]
+    ret_win = [r for r in rows if r["ret"] > r["bh_ret"]]
+    dds = sorted(r["dd"] for r in rows)
+    med_dd = float(np.median(dds))
+    beat = len(dd_win) / len(rows)
+    verdict = "STABIL" if beat >= 0.8 else ("SEBAGIAN" if beat >= 0.5 else "RENTAN / OVERFIT")
+    v = {"n": len(rows), "beat_dd": beat, "beat_ret": len(ret_win) / len(rows),
+         "med_dd": med_dd, "best_dd": max(dds), "worst_dd": min(dds),
+         "med_ret": float(np.median([r["ret"] for r in rows])),
+         "med_sharpe": float(np.median([r["sharpe"] for r in rows])),
+         "bh_dd": float(np.median([r["bh_dd"] for r in rows])),
+         "bh_ret": float(np.median([r["bh_ret"] for r in rows])), "verdict": verdict}
+    if cur:
+        rank = sorted(rows, key=lambda r: -r["dd"])
+        pos = next((i for i, r in enumerate(rank)
+                    if (r["entry"], r["ts"], r["rebal"]) == (cur["entry"], cur["ts"], cur["rebal"])), None)
+        v["cur_rank"] = (pos + 1) if pos is not None else None
+        v["cur_n"] = len(rows)
+    return v
+
+
+def cmd_peka(ticker, cfg, entries=GRID_ENTRY, tss=GRID_TS, rebals=GRID_REBAL):
+    slip = float(cfg.get("slip_pct", SLIP * 100))
+    fi = (float(cfg.get("fee_buy_pct", FEE_BUY * 100)) + slip) / 100
+    fo = (float(cfg.get("fee_sell_pct", FEE_SELL * 100)) + slip) / 100
+    ui.header(f"UJI PEKA {ticker}", "grid ambang skor × trailing stop × jarak kalibrasi — "
+              "kalau hasilnya hanya bagus di satu sel, itu overfit, bukan edge")
+    rows = sweep(ticker, entries, tss, rebals, cfg["flat"], cfg["gate"], fi, fo)
+    if not rows:
+        raise SystemExit("History terlalu pendek untuk grid ini.")
+    cur = {"entry": cfg["entry"], "ts": cfg["ts_mult"], "rebal": cfg["rebal"]}
+    v = sweep_verdict(rows, cur)
+    ui.table(["ENTRY", "TS×ATR", "REBAL", "TRADE", "EXPOSURE", "RETURN", "CAGR", "MAX DD",
+              "SHARPE", "DD B&H", "NILAI"],
+             [[f"{r['entry']:+.0f}", f"{r['ts']:.1f}", f"{r['rebal']}", f"{r['trades']}",
+               f"{r['exposure']*100:.0f}%", _fmt_pct(r["ret"]), _fmt_pct(r["cagr"]),
+               f"{r['dd']*100:.1f}%", f"{r['sharpe']:.2f}", f"{r['bh_dd']*100:.1f}%",
+               ("[bold cyan]◄ konfigurasi aktif[/]" if (r["entry"], r["ts"], r["rebal"]) ==
+                (cur["entry"], cur["ts"], cur["rebal"]) else "")]
+              for r in sorted(rows, key=lambda r: -r["dd"])],
+             caption=f"{rows[0]['start'].date()} → {rows[0]['end'].date()} · biaya dua sisi "
+                     f"{(fi+fo)*100:.2f}% per putaran · diurut dari drawdown paling dangkal")
+    warna = {"STABIL": "green", "SEBAGIAN": "yellow"}.get(v["verdict"], "red")
+    ui.info_panel("KESIMPULAN GRID", [
+        f"[{warna}]{v['verdict']}[/] dari [bold]{v['n']}[/] kombinasi:",
+        f"· drawdown lebih dangkal dari buy & hold pada [bold]{v['beat_dd']*100:.0f}%[/] sel; "
+        f"return lebih baik hanya pada [bold]{v['beat_ret']*100:.0f}%[/] sel.",
+        f"· median drawdown [bold]{v['med_dd']*100:.1f}%[/] (terbaik {v['best_dd']*100:.1f}%, "
+        f"terburuk {v['worst_dd']*100:.1f}%) vs buy & hold [dim]{v['bh_dd']*100:.1f}%[/].",
+        f"· median return [bold]{v['med_ret']*100:+.1f}%[/] vs buy & hold [dim]{v['bh_ret']*100:+.1f}%[/], "
+        f"median Sharpe [bold]{v['med_sharpe']:.2f}[/].",
+        ("· [yellow]CATATAN:[/] 'STABIL' di sini berarti [bold]konsisten lebih kecil rugi[/], bukan "
+         "konsisten untung — median return masih negatif, jadi grid ini mengukur ketahanan, bukan cuan."
+         if v["med_ret"] < 0 else ""),
+        (f"· Setelan aktif kamu (entry {cur['entry']:+.0f}, ts {cur['ts']}, rebal {cur['rebal']}) "
+         f"peringkat [bold]{v['cur_rank']}[/] dari {v['cur_n']} paling aman."
+         if v.get("cur_rank") else ""),
+        "",
+        "[grey62]Bacaan jujur: klaim 'aman' hanya berlaku kalau sebagian besar grid searah. Kalau "
+        "hanya 1-2 sel yang bagus dan sisanya buruk, angka bagus di layar kamu adalah hasil "
+        "pemilihan, bukan perilaku sistem.[/]"], warna)
+    best = max(rows, key=lambda r: r["dd"])
+    ui.info_panel("LANGKAH BERIKUT", [
+        f"· Sel paling aman: entry [bold]{best['entry']:+.0f}[/], ts [bold]{best['ts']}[/], rebal "
+        f"[bold]{best['rebal']}[/] → terapkan satu per satu: [bold]idx.py cfg set entry "
+        f"{best['entry']:.0f}[/] · [bold]cfg set ts_mult {best['ts']}[/] · [bold]cfg set rebal "
+        f"{best['rebal']}[/]",
+        "· Jangan pakai sel terbaik hanya karena angkanya paling keren — pilih yang masih masuk akal "
+        "untuk gaya tradingmu (lihat kolom EXPOSURE dan TRADE).",
+        "· Bandingkan beberapa saham: [bold]idx.py backtest --semua[/] (modal bersama, slot, likuiditas).",
+        "· Ulangi setelah data bertambah — grid ini sensitif terhadap periode yang diambil."], "cyan")
+
+
+def portfolio_backtest(tickers, capital=100_000_000, risk_pct=1.0, max_positions=5,
+                       entry=20.0, flat=0.0, ts_mult=2.5, rebal=63, gate=True,
+                       max_pos_pct=MAX_POS_PCT, max_vol_pct=MAX_VOL_PCT,
+                       fee_in=None, fee_out=None, progress=None):
+    """Backtest portofolio: beberapa saham berebut satu modal lewat aturan ukuran posisi yang sama
+    dengan mode `check` — risiko per posisi, porsi maksimum, dan cap likuiditas nilai harian.
+
+    Dua tahap: (1) daftar transaksi tiap saham dihasilkan dari skornya masing-masing,
+    (2) penjadwal menjalankan transaksi itu secara berurutan selama slot dan uang masih ada.
+    """
+    fi, fo = _side_costs(fee_in, fee_out)
+    gs = index_gate() if gate else None
+    legs, per = {}, {}
+    dates = None
+    for i, t in enumerate(tickers):
+        if progress:
+            progress(f"skor walk-forward {t}", i + 1, len(tickers))
+        try:
+            df = load(t)
+        except SystemExit:
+            continue
+        sig, _ = build_signals(df)
+        w = _sim_window(df, sig, rebal, gs if gate else pd.Series(True, index=df.index))
+        if not w:
+            continue
+        sim, c, atrn, g = w
+        pos, tr = simulate_trades(sim, c, atrn, g, entry, flat, ts_mult, fee_in=fi, fee_out=fo)
+        legs[t] = {"c": c, "pos": pos, "trades": tr, "adv": adv_rupiah(df).reindex(c.index)}
+        idx = set(c.index)
+        dates = idx if dates is None else (dates & idx)
+    if progress:
+        progress(None, 1, 1)
+    if not legs or not dates:
+        raise SystemExit("Tidak ada irisan tanggal yang cukup antar saham — kurangi daftarnya.")
+    dates = pd.DatetimeIndex(sorted(dates))
+    if len(dates) < 120:
+        raise SystemExit(f"Irisan tanggal terlalu pendek ({len(dates)} bar) untuk backtest portofolio.")
+
+    entries_by, exits_by = {}, {}
+    dateset = set(dates)
+    for t, L in legs.items():
+        for tr in L["trades"]:
+            if tr["date_in"] in dateset:
+                entries_by.setdefault(tr["date_in"], []).append((t, tr))
+            if not tr["open"] and tr["date_out"] in dateset:
+                exits_by.setdefault(tr["date_out"], []).append((t, tr))
+    px = pd.DataFrame({t: L["c"].reindex(dates) for t, L in legs.items()}).ffill()
+
+    cash, open_pos, curve = float(capital), {}, []
+    taken = rejected = 0
+    cap_slot = cap_pos = cap_liq = cap_cash = 0
+    realized = []
+    fees_paid = 0.0
+    bars_in_market = 0
+    for d in dates:
+        for t, tr in exits_by.get(d, []):
+            o = open_pos.pop(t, None)
+            if not o:
+                continue
+            sell_px = float(px.at[d, t])
+            fees_paid += o["shares"] * sell_px * fo
+            proceeds = o["shares"] * sell_px * (1 - fo)
+            cash += proceeds
+            realized.append({"ticker": t, "in": tr["date_in"], "out": d, "hold": tr["hold"],
+                             "ret": proceeds / o["cost"] - 1, "reason": tr["reason"],
+                             "notional": o["cost"]})
+        for t, tr in entries_by.get(d, []):
+            if t in open_pos:
+                continue
+            if len(open_pos) >= max_positions:
+                cap_slot += 1
+                rejected += 1
+                continue
+            buy_px = float(px.at[d, t])
+            equity_now = curve[-1] if curve else cash
+            stop_frac = max(tr["risk_frac"], 1e-4)
+            # risiko per posisi membatasi jumlah lembar; porsi maksimum & likuiditas membatasi nilai
+            shares = (equity_now * risk_pct / 100.0) / (buy_px * stop_frac)
+            adv = legs[t]["adv"].get(d, np.nan)
+            liq = max_vol_pct * float(adv) if adv and adv == adv else np.inf
+            budget = min(cash, equity_now * max_pos_pct)
+            limit = min(budget, liq)
+            if shares * buy_px > limit:
+                if limit == liq:
+                    cap_liq += 1
+                else:
+                    cap_pos += 1
+                shares = limit / buy_px
+            shares = int(shares // 100 * 100)
+            cost = shares * buy_px * (1 + fi)
+            if shares < 100 or cost > cash:
+                cap_cash += 1
+                rejected += 1
+                continue
+            fees_paid += shares * buy_px * fi
+            cash -= cost
+            open_pos[t] = {"shares": shares, "cost": cost}
+            taken += 1
+        mv = sum(o["shares"] * float(px.at[d, t]) for t, o in open_pos.items())
+        if open_pos:
+            bars_in_market += 1
+        curve.append(cash + mv)
+    eq = pd.Series(curve, index=dates)
+    strat = eq.pct_change().fillna(0)
+    bh = px.div(px.iloc[0]).mean(axis=1)
+    yrs = max(len(dates) / 252, 1e-9)
+    out = {"dates": dates, "eq": eq, "bh": bh, "yrs": yrs, "legs": len(legs),
+           "tickers": list(legs), "trades": realized, "taken": taken, "rejected": rejected,
+           "cap_slot": cap_slot, "cap_pos": cap_pos, "cap_liq": cap_liq, "cap_cash": cap_cash,
+           "fees": fees_paid, "capital": capital,
+           "ret": float(eq.iloc[-1] / capital - 1),
+           "cagr": float((eq.iloc[-1] / capital) ** (1 / yrs) - 1),
+           "dd": float((eq / eq.cummax() - 1).min()),
+           "sharpe": float(strat.mean() / (strat.std() or 1) * np.sqrt(252)),
+           "exposure": bars_in_market / len(dates),
+           "bh_ret": float(bh.iloc[-1] - 1), "bh_dd": float((bh / bh.cummax() - 1).min())}
+    try:
+        ihsg = yf.Ticker("^JKSE").history(start=dates[0], end=dates[-1])["Close"].dropna()
+        if len(ihsg) > 30:
+            out["ihsg_ret"] = float(ihsg.iloc[-1] / ihsg.iloc[0] - 1)
+            out["ihsg_dd"] = float((ihsg / ihsg.cummax() - 1).min())
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
 
 def track_record(sim, c, gate_series=None, horizon=5, thresh=20.0):
     """Rekam jejak sinyal INI di saham INI — pengganti klaim 'yakin profit'.
@@ -732,6 +1174,18 @@ def cmd_decide(ticker, capital=100_000_000, risk_pct=1.0, entry=20.0, ts_mult=2.
     d = decide(ticker, capital, risk_pct, entry=entry, ts_mult=ts_mult, rebal=rebal)
     render_decision(d)
 
+def basis_note(d):
+    """Baris yang menjelaskan bar mana yang menghasilkan skor dan harga mana yang dipakai mengukur posisi."""
+    lp, bc = d.get("live_px"), d.get("bar_close", d["close"])
+    if lp is not None and abs(lp - bc) > 0.5:
+        return (f"skor dari bar [bold]{d['date']}[/] (harga {bc:,.0f}) · stop/target/lot dari harga live "
+                f"[bold]{lp:,.0f}[/] ({(lp/bc-1)*100:+.1f}%)")
+    if d.get("live_ahead"):
+        return (f"[yellow]kutipan live lebih baru dari bar terakhir — skor masih dari {d['date']}, "
+                "indikator belum melihat hari ini[/]")
+    return f"skor & harga dari bar harian yang sama ({d['date']}) — identik dengan tabel scanner"
+
+
 def data_status_lines(d):
     """Baris panel validasi data dari hasil `snapshot(with_live=True)`."""
     if not live or not d.get("live"):
@@ -767,6 +1221,7 @@ def render_decision(d, compact=False):
         ev.append(f"Historik trade simulasi ..... [bold]{st['n']}[/] posisi, win rate "
                   f"[{'green' if st['win']>=0.5 else 'yellow'}]{st['win']*100:.0f}%[/], median hold "
                   f"[bold]{st['median_hold']:.0f}[/] hari bursa (~{st['median_hold']/21:.1f} bulan)")
+    ev.append(f"Basis angka ............. {basis_note(d)}")
     ui.info_panel("EVIDEN", ev, "cyan")
 
     if d["bullish"]:

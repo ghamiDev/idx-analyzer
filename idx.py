@@ -5,6 +5,9 @@
   python idx.py brief --refresh       # paksa hitung ulang (tanpa memakai riwayat skor hari ini)
   python idx.py check <TICKER>        # keputusan 1 saham + rencana entry/stop/target + ukuran lot
   python idx.py scan|analyze|score|market|backtest <TICKER|--top N>
+  python idx.py backtest <TICKER>     # aturan yang sama atas sejarah: transaksi per posisi + biaya dua sisi
+  python idx.py backtest --semua      # portofolio gabungan: satu modal bersama, rebutan slot, cap likuiditas
+  python idx.py peka <TICKER>         # grid ambang skor × trailing stop × jarak kalibrasi + vonis overfit
   python idx.py pos                   # status posisi terbuka: P&L, stop, skor, sisa risiko
   python idx.py pos add <T> [--lot N] [--harga X] [--cat "..."]
   python idx.py pos cut <T> [--lot N] [--harga X]
@@ -12,12 +15,13 @@
   python idx.py hist [<T>] [--days N] # riwayat skor, delta, transaksi & rekap P&L realisasi
   python idx.py cekdata [<T> ...]     # dari mana angka datang: sumber hidup/matinya, umur data,
                                       # kecocokan bar harian vs kutipan live (append --semua)
+  python idx.py ikon                  # uji tampil: apakah ikon tergambar & kolom rata di terminal ini
   python idx.py minggu [<T>]          # "dengan modal ini, saham apa yang layak beli 1 minggu?"
                                       # ranking horison 5 hari + rekam jejak + 1 rencana + berita
                                       # <T> diisi → kartu: BERITA → HASIL ANALISA → PENDUKUNG → KEPUTUSAN
                                       # --kartu untuk melihat tampilan kartu dari pilihan teratas ranking
 
-Override sekali jalan (tidak disimpan): --modal 250000000 --risiko 0.5 --entry 25 --ts 3 --top 10 --rebal 42
+Override sekali jalan (tidak disimpan): --modal 250000000 --risiko 0.5 --entry 25 --ts 3 --top 10 --rebal 42 --slip 0.2
 
 Semua mode memakai config.json yang sama, jadi hasilnya saling terhubung
 (scanner → kandidat → ukuran posisi → pencatat portofolio → laporan harian).
@@ -155,6 +159,12 @@ def _market(cfg, fresh=False):
         return market_state.get_market_state(_universe(cfg), use_cache=not fresh)
 
 
+def _costs(cfg):
+    """Fee + slippage per sisi dalam pecahan (config menyimpan persen)."""
+    slip = cfg["slip_pct"] / 100.0
+    return (cfg["fee_buy_pct"] / 100.0 + slip, cfg["fee_sell_pct"] / 100.0 + slip)
+
+
 def _live_check(code, df=None):
     """Ambil kutipan live + bandingkan dengan bar harian; return (garis_panel, kutipan)."""
     if not live:
@@ -288,7 +298,9 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
         "· Angka rupiah di rencana aksi adalah [bold]ukuran maksimal[/] menurut risiko 1% per posisi dan "
         "sisa anggaran agregat, bukan perintah beli.",
         "· Sistem ini [bold]pengendali risiko[/], bukan peramal: edge-nya di drawdown & disiplin keluar, "
-        "bukan di akurasi arah. Validasi sendiri lewat [bold]idx.py backtest[/] dan uji peka.",
+        "bukan di akurasi arah. Validasi sendiri lewat [bold]idx.py backtest <KODE>[/] (1 saham, "
+        "transaksi + biaya), [bold]backtest --semua[/] (modal bersama), [bold]peka <KODE>[/] (grid "
+        "kepekaan).",
         "· Riwayat skor tersimpan di history.csv, laporan di reports/, posisi di data/positions.json — "
         "semuanya text plain dan bisa diedit manual.",
         "· Panel STATUS DATA membandingkan bar harian dengan kutipan live (jeda ±1 menit). Kalau ada "
@@ -376,8 +388,7 @@ def cmd_minggu(cfg, ticker=None, top=8, refresh=False, kartu=False):
               f"[bold]{cfg['week_risk_pct']}%[/] = {cfg['capital']*cfg['week_risk_pct']/100:,.0f} · "
               f"universe {len(uni)} saham · horison scoring {H} hari")
     ms = _market(cfg, refresh)
-    rows, ms = eng.compute_scan(uni, ms, horizon=H, rebal=cfg["rebal"], thresh=cfg["entry"],
-                                quiet=not ticker)
+    rows, ms = eng.compute_scan(uni, ms, horizon=H, rebal=cfg["rebal"], thresh=cfg["entry"])
     for r in rows:
         rec = r["rec"]
         ok = rec["n"] and not np.isnan(rec["prob_up"])
@@ -417,7 +428,9 @@ def cmd_minggu(cfg, ticker=None, top=8, refresh=False, kartu=False):
                     str(rec["n"]), f"{r['close']:,.0f}"))
     ui.table(["#", "KODE", "SKOR", "verdik", "rezim", "prob 5h", "acak", "edge", "rerata", "n", "harga"], trs,
              caption=f"prob 5h = dari n sinyal skor≥{cfg['entry']:.0f} di saham ini sendiri, berapa % harga 5 hari "
-                     f"kemudian lebih tinggi (sudah potong fee {eng.FEE_ROUNDTRIP*100:.2f}%)")
+                     f"kemudian lebih tinggi (sudah potong fee {eng.FEE_ROUNDTRIP*100:.2f}%) · "
+                     f"kolom SKOR adalah skor yang sama persis dengan yang dipakai rencana di bawah "
+                     f"(basis bar harian {rows[0].get('date', '?')})")
     if not ranked:
         ui.info_panel("JAWABAN JUJUR", [
             f"[bold]Tidak ada saham di daftar ini yang lolos tiga syarat sekaligus[/]: skor akhir "
@@ -543,6 +556,12 @@ def _badge(b):
     return "[bold green]BULLISH[/]" if b > 0 else ("[bold red]BEARISH[/]" if b < 0 else "[bold grey74]NETRAL[/]")
 
 
+def _item(icon, i, text):
+    """Baris daftar bernomor dengan ikon — '📰 01 …' lebih enak dipindai mata daripada 'berita[01] …'."""
+    mk = ui.ic(icon)
+    return f"{mk + ' ' if mk else ''}[bold]{i:02d}[/]  {text}"
+
+
 def render_kartu(d, best, ns, news, cfg, H):
     """Kartu satu saham: BERITA → HASIL ANALISA → ANALISA PENDUKUNG → KEPUTUSAN."""
     st = live.mark(d["live"]) if live and d.get("live") else "STATUS DATA: live tidak diperiksa"
@@ -553,12 +572,14 @@ def render_kartu(d, best, ns, news, cfg, H):
     br = []
     for i, x in enumerate(top, 1):
         t = ui.lit(x["title"])
-        br.append(f"[bold]berita[{i:02d}][/] {t[:78]}" + ("…" if len(t) > 78 else ""))
+        br.append(_item("news", i, t[:78] + ("…" if len(t) > 78 else "")))
         ring = ", ".join(x["tags"][:2]) or "tidak ada kata kunci khas"
         umur = stocknews.umur_txt(x.get("age_h"))
         stl = "bold red" if x.get("age_h") is None or x["age_h"] > 72 else "grey74"
-        br.append(f"    {ui.lit(f'[{x['source'] or 'sumber?'}] · [{x['date'].strftime('%d-%m-%Y') if x['date'] else '-'}]')} "
-                  f"· [{stl}]{umur}[/] · {ring}")
+        tgl = x["date"].strftime("%d-%m-%Y") if x["date"] else "-"
+        kk = (f"[grey62]kata kunci:[/] {ring}" if x["tags"] else "[grey62]tanpa kata kunci khas[/]")
+        br.append(f"      [grey62]└[/] {ui.lit(x['source'] or 'sumber?')} · [grey62]{tgl}[/] "
+                  f"· [{stl}]{umur}[/] · {kk}")
     if not br:
         br = ["[grey62]tidak ada headline dalam jendela waktu[/]"]
     if ns.get("basi") and ns.get("n"):
@@ -569,15 +590,16 @@ def render_kartu(d, best, ns, news, cfg, H):
     an = []
     for i, x in enumerate(top, 1):
         kes = "; ".join(TAG_KESIMPULAN.get(t, t) for t in x["tags"][:2]) or "judulnya netral, tidak memberi informasi arah"
-        an.append(f"[bold]analisa[{i:02d}][/] {kes} → bias {x['bias']:+.1f} {_badge(x['bias'])}")
-        an.append(f"    {ui.lit(f'[dasar dari berita {i:02d}]')} {ui.lit(x['source'] or 'sumber?')} · kata kunci "
-                  f"{', '.join(x['tags'][:2]) or '-'}")
+        an.append(_item("scale", i, f"{kes} → bias {x['bias']:+.1f} {_badge(x['bias'])}"))
+        an.append(f"      [grey62]dasar[/] berita {i:02d} · {ui.lit(x['source'] or 'sumber?')} · "
+                  f"[grey62]kata kunci[/] {', '.join(x['tags'][:2]) or '-'}")
     ui.info_panel("HASIL ANALISA · kesimpulan dari berita", an, "yellow")
-    pd_ = [f"pendukung[{j:02d}] " + l[2:] for j, l in enumerate(_faktor_lines(d, ns)[:4], 1)]
+    pd_ = [_item("chart", j, l[2:]) for j, l in enumerate(_faktor_lines(d, ns)[:4], 1)]
     r = best["rec"]
-    pd_ += [f"pendukung[{len(pd_)+1:02d}] rekam jejak: {r['n']} sinyal sekuat ini di "
-            f"{d['ticker']} → naik {r['prob_up']*100:.0f}% vs acak {r['base_up']*100:.0f}% "
-            f"(edge {best['edge_pp']:+.1f}pp ± {best['se_pp']:.1f}pp)"]
+    pd_ += [_item("chart", len(pd_) + 1,
+                  f"rekam jejak: {r['n']} sinyal sekuat ini di "
+                  f"{d['ticker']} → naik {r['prob_up']*100:.0f}% vs acak {r['base_up']*100:.0f}% "
+                  f"(edge {best['edge_pp']:+.1f}pp ± {best['se_pp']:.1f}pp)")]
     ui.info_panel("ANALISA PENDUKUNG · data untuk memperkuat keputusan", pd_, "green")
     act, qty = d["act"], d["qty"]
     lots = qty // LOT
@@ -598,7 +620,8 @@ def render_kartu(d, best, ns, news, cfg, H):
           f"gate IHSG {'terbuka' if d['gate'] else 'TERTUTUP'}.",
           f"  {'berita 01–03 tidak boleh menimpa aturan ini: ' if aksi.startswith('BUY') else 'sistem menolak posisi baru: '}"
           f"stop {d['stop']:,.0f} · rugi maks {qty*d['risk_per_share']:,.0f} rupiah · "
-          f"jual ≤ {_exit_date(d['df'], H)}"]
+          f"jual ≤ {_exit_date(d['df'], H)}",
+          "  basis: " + eng.basis_note(d)]
     if best["edge_pp"] <= 0:
         kp.append(f"  [red]perhatian:[/] rekam jejak {r['n']} sinyal sekuat ini di {d['ticker']} justru "
                   f"{best['edge_pp']:+.1f}pp terhadap peluang acak — pola ini belum terbukti di datanya "
@@ -648,8 +671,11 @@ def render_minggu(d, best, ranked, ns, news, cfg, H):
         "dan berapa rugi maksimumnya[/]. Yang TIDAK bisa dijawab: saham apa yang pasti naik.",
         "· Modal kecil membuat satu lot sudah jadi posisi besar — batas 20% modal dilonggarkan ke "
         f"{cfg['week_max_pos_pct']*100:.0f}% di mode ini; yang mengikat Anda tetap jarak stop, bukan modal.",
-        "· Fee IDX round-trip 0,4% sudah dipotong dari semua angka return. Satu lot saham Rp1.000-an "
-        "belum termasuk biaya broker efektif lebih besar lagi.",
+        "· Basis angka tabel & rencana: " + eng.basis_note(d) + ".",
+        f"· Biaya dipotong per sisi: beli {cfg['fee_buy_pct']:.2f}% + jual {cfg['fee_sell_pct']:.2f}% + "
+        f"slippage {cfg['slip_pct']:.2f}% ≈ [bold]{(cfg['fee_buy_pct']+cfg['fee_sell_pct']+2*cfg['slip_pct']):.2f}%[/] "
+        "per putaran (bukan 0,4% bulat). Pada saham harga Rp1.000-an, satu lot belum termasuk biaya "
+        "broker efektif — jadi lebih besar lagi.",
         "· Bar harian dari sumber publik (Yahoo) bisa tertinggal/revisi; panel VALIDASI DATA di atas "
         "membandingkannya dengan kutipan live berjeda ±1 menit. Volume IHSG memang tidak tersedia, dan "
         "berita adalah kata kunci — bila ada rilis laporan keuangan atau aksi korporasi minggu ini, "
@@ -669,7 +695,28 @@ MENU = [
     ("7", "cfg show — konfigurasi aktif", ["cfg", "show"]),
     ("8", "hist — riwayat skor + transaksi + rekap realisasi", ["hist"]),
     ("9", "cekdata — dari mana angka ini datang, segaram apa, cocok tidak dengan live", ["cekdata"]),
+    ("0", "ikon — uji tampil ikon & rata kolom di terminal ini", ["ikon"]),
+    ("b", "backtest <KODE> — aturan yang sama atas sejarah 1 saham: transaksi + biaya dua sisi",
+     ["backtest", "{T}"]),
+    ("p", "backtest --semua — portofolio: satu modal bersama, rebutan slot & cap likuiditas",
+     ["backtest", "--semua"]),
+    ("s", "peka <KODE> — grid ambang × trailing stop × kalibrasi + vonis overfit", ["peka", "{T}"]),
 ]
+
+
+def _fill(argv, cfg):
+    """Ganti placeholder menu ({T}/{M}/{N}) dengan jawaban user."""
+    out = []
+    for tok in argv:
+        if tok == "{T}":
+            out.append(_ask("kode saham (mis. BBRI)", "BBCA"))
+        elif tok == "{M}":
+            out.append(_ask("modal rupiah", str(int(cfg["capital"]))).replace(".", "").replace(",", ""))
+        elif tok == "{N}":
+            out.append(_ask("jumlah baris ranking", "8"))
+        else:
+            out.append(tok)
+    return out
 
 
 def _ask(prompt, default=""):
@@ -689,6 +736,8 @@ def cmd_menu(cfg):
                   f"{cfg['week_horizon']} hari bursa")
         ui.info_panel("MENU", [f"  [bold cyan]{k}[/]  {desc}" for k, desc, _ in MENU] +
                       ["  [bold cyan]Q[/]  keluar",
+                       "", f"[grey62]{ui.legend()}[/]" if ui.legend() else "",
+                       f"[yellow]{ui.icon_hint()}[/]" if ui.icon_hint() else "",
                        "", "[grey62]Boleh juga ketik perintah langsung, mis. `minggu AMRT` atau "
                        "`check BBRI --modal 3000000`.[/]"], "blue")
         try:
@@ -709,15 +758,14 @@ def cmd_menu(cfg):
             m = _ask("modal rupiah", str(int(cfg["capital"]))).replace(".", "").replace(",", "")
             argv = ["minggu", "--modal", m or str(cfg["capital"]),
                     "--top", _ask("jumlah baris ranking", "8")]
-        elif pick in ("4", "5", "6", "7", "8", "9"):
-            argv = dict((k, a) for k, _, a in MENU)[pick]
-            if "{T}" in argv:
-                argv = [x.replace("{T}", _ask("kode saham", "BBCA")) for x in argv]
+        elif pick in dict((k, a) for k, _, a in MENU):
+            argv = _fill(dict((k, a) for k, _, a in MENU)[pick], cfg)
         elif pick.split()[0] in ("minggu", "week", "brief", "check", "decide", "pos", "cfg", "hist",
-                                 "scan", "analyze", "score", "market", "backtest", "cekdata"):
+                                 "scan", "analyze", "score", "market", "backtest", "cekdata", "ikon",
+                                 "peka"):
             argv = pick.split()
         else:
-            ui.info_panel("MENU", ["Pilih 1–9 atau Q, atau ketik perintah lengkap."], "red")
+            ui.info_panel("MENU", ["Pilih 1–9, 0, b, p, s, atau Q — atau ketik perintah lengkap."], "red")
             continue
         try:
             main(argv)
@@ -800,11 +848,13 @@ def cmd_cekdata(cfg, tickers=None, all_universe=False):
                                                                  if all_universe else uni[:4])
     ui.header("VALIDASI SUMBER DATA", f"mesin analisis memakai bar harian; sumber live dipakai untuk "
               f"memeriksa. Sekarang {dt.datetime.now(live.WIB):%H:%M} WIB.")
-    rows = [(f"[bold]{n}[/]", f"[{'green' if s == 'HDUP' else 'red'}]{s}[/]", k)
-            for n, s, k in live.probe_all()]
+    with ui.wait("memeriksa hidup/matinya sumber data (5 endpoint)…"):
+        probes = live.probe_all()
+    rows = [(f"[bold]{n}[/]", f"[{'green' if s == 'HDUP' else 'red'}]{s}[/]", k) for n, s, k in probes]
     ui.table(["SUMBER", "status", "keterangan"], rows,
              caption="satu-satunya yang bisa dipakai script adalah Yahoo; IDX resmi menolak (Cloudflare)")
-    q = live.quote("^JKSE")
+    with ui.wait("mengambil kutipan live IHSG + kalender sesi…"):
+        q = live.quote("^JKSE")
     kal = (f"· kalender sesi dari sumber: {live._at(q['open_epoch'], q['tz_off']):%H:%M}–"
            f"{live._at(q['close_epoch'], q['tz_off']):%H:%M} WIB"
            if q.get("open_epoch") and q.get("close_epoch") else "· kalender sesi tidak dikirim sumber")
@@ -834,15 +884,44 @@ def cmd_cekdata(cfg, tickers=None, all_universe=False):
                       "jangan pakai hasil scan/check hari ini untuk order nyata."], "red")
 
 
+def cmd_ikon(cfg):
+    """Uji mata sendiri: ikon mana yang tergambar dan apakah kolom tetap rata di terminal ini."""
+    mode = ui.icon_mode()
+    ui.header("UJI IKON & RATA TAMPILAN",
+              f"terminal {ui.avail()} kolom · mode ikon aktif [bold]{mode}[/] — "
+              "kalau ada simbol tampil sebagai kotak ▯ atau karakter rusak, paksa bentuk aman: "
+              "[bold]IDX_ICONS=ascii[/] (Windows) / [bold]export IDX_ICONS=ascii[/] (Termux), "
+              "atau none untuk tanpa ikon")
+    hint = ui.icon_hint()
+    if hint:
+        ui.info_panel("KENAPA BUKAN EMOJI", [
+            hint,
+            "",
+            "[grey62]Tiga tier yang tersedia — coba satu-satu untuk melihat mana yang paling bersih "
+            "di terminal kamu:[/] `IDX_ICONS=emoji` · `symbol` · `ascii` · `none`."], "yellow")
+    ui.info_panel("LEGENDA", [ui.legend()] if ui.legend()
+                  else ["[grey62]ikon dimatikan (IDX_ICONS=none)[/]"], "blue")
+    ui.table(["VERDIK", "SKOR", "REZIM", "HARGA"],
+             [[ui.verdict_markup(v), f"{s:+.1f}", r, f"{h:,.0f}"] for v, s, r, h in
+              (("BELI KUAT", 38.2, "trending", 2320), ("SIAGA", 26.4, "netral", 456),
+               ("WATCHLIST", 12.0, "choppy", 1315), ("PEGANG", 1.5, "netral", 28),
+               ("KURANGI", -6.7, "trending", 825), ("JUAL KUAT", -31.9, "choppy", 6125))])
+    for t in ("KONDISI PASAR GLOBAL", "BERITA TERKINI", "KEPUTUSAN BUY / SELL", "UKURAN POSISI",
+              "ANGGARAN RISIKO", "CARA BACA"):
+        ui.info_panel(t, ["(contoh isi panel)"], "cyan")
+
+
 # --------------------------------------------------------------- CLI
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("mode", nargs="?", default=None,
                    choices=["menu", "brief", "scan", "analyze", "score", "market", "backtest", "check",
-                            "decide", "pos", "cfg", "hist", "minggu", "week", "cekdata"])
+                            "decide", "pos", "cfg", "hist", "minggu", "week", "cekdata", "ikon", "peka"])
     p.add_argument("rest", nargs="*", help="ticker / arg tambahan (lihat docstring)")
-    p.add_argument("--semua", action="store_true", help="cekdata: periksa seluruh watchlist, bukan 4 sampel")
+    p.add_argument("--semua", action="store_true",
+                   help="cekdata: seluruh watchlist bukan 4 sampel · backtest: portofolio gabungan "
+                        "(modal bersama), bukan 1 saham")
     p.add_argument("--top", type=int)
     p.add_argument("--modal", type=float, help="override modal untuk sesi ini (tidak disimpan)")
     p.add_argument("--risiko", type=float, help="override %% risiko per posisi untuk sesi ini")
@@ -856,6 +935,7 @@ def main(argv=None):
     p.add_argument("--flat", type=float)
     p.add_argument("--ts", type=float)
     p.add_argument("--rebal", type=int, help="override jarak rekalibrasi bobot (bar) untuk sesi ini")
+    p.add_argument("--slip", type=float, help="override slippage %% per sisi untuk sesi ini")
     p.add_argument("--kartu", action="store_true", help="tampilan kartu: berita → analisa → pendukung → keputusan")
     p.add_argument("--nogate", action="store_true")
     a = p.parse_args(argv)
@@ -873,6 +953,8 @@ def main(argv=None):
         cfg["risk_pct"] = a.risiko
     if a.rebal:
         cfg["rebal"] = a.rebal
+    if a.slip is not None:
+        cfg["slip_pct"] = a.slip
 
     m = a.mode or "menu"
     if m == "menu":
@@ -891,6 +973,8 @@ def main(argv=None):
         cmd_cfg(cfg, a.rest)
     elif m == "hist":
         cmd_hist(cfg, a.rest[0] if a.rest else None, a.days)
+    elif m == "ikon":
+        cmd_ikon(cfg)
     elif m == "cekdata":
         cmd_cekdata(cfg, a.rest, a.semua)
     elif m in ("check", "decide"):
@@ -915,14 +999,34 @@ def main(argv=None):
         ui.info_panel("LANGKAH BERIKUT", [
             "· [bold]idx.py brief[/] — satu dashboard: pasar → scanner → portofolio → rencana aksi.",
             "· Panel ini cached 30 menit; [bold]--refresh[/] memaksa ambil ulang berita & makro."], "cyan")
-    elif m == "score":
-        eng.cmd_score(pf.normalize(a.rest[0]) if a.rest else "^JKSE")
-    elif m == "analyze":
-        eng.cmd_analyze(pf.normalize(a.rest[0]) if a.rest else "^JKSE", cfg["rebal"],
-                        cfg["entry"], cfg["ts_mult"])
     elif m == "backtest":
-        eng.cmd_backtest(pf.normalize(a.rest[0]) if a.rest else "^JKSE", cfg["entry"], cfg["flat"],
-                         cfg["rebal"], cfg["ts_mult"], cfg["gate"] and not a.nogate)
+        if a.semua:
+            uni = _universe(cfg)
+            tick = [pf.normalize(t) for t in (a.rest or uni[:cfg["top"]])]
+            with ui.wait(f"menghitung skor walk-forward {len(tick)} saham…"):
+                res = eng.portfolio_backtest(
+                    tick, cfg["capital"], cfg["risk_pct"], cfg["max_positions"], cfg["entry"],
+                    cfg["flat"], cfg["ts_mult"], cfg["rebal"], cfg["gate"] and not a.nogate,
+                    cfg["max_pos_pct"] / 100.0, cfg["max_volume_pct"] / 100.0, *_costs(cfg),
+                    progress=lambda msg, i, n: ui.stage(f"{msg} ({i}/{n})") if msg else None)
+            eng.cmd_backtest_portfolio(res, cfg)
+            return
+        sym = pf.normalize(a.rest[0]) if a.rest else "^JKSE"
+        ui.stage(f"menjalankan backtest {sym} (banyak replikasi historis)…")
+        eng.cmd_backtest(sym, cfg["entry"], cfg["flat"], cfg["rebal"], cfg["ts_mult"],
+                         cfg["gate"] and not a.nogate, *_costs(cfg), slip=cfg["slip_pct"] / 100.0)
+    elif m == "peka":
+        sym = pf.normalize(a.rest[0]) if a.rest else "^JKSE"
+        ui.stage(f"menguji kepekaan {sym} (grid ambang × stop × kalibrasi)…")
+        eng.cmd_peka(sym, cfg)
+    elif m in ("score", "analyze"):
+        sym = pf.normalize(a.rest[0]) if a.rest else "^JKSE"
+        ui.stage({"score": f"menghitung skor walk-forward {sym}…",
+                  "analyze": f"memuat 5 tahun bar harian + 20 metode untuk {sym}…"}[m])
+        if m == "score":
+            eng.cmd_score(sym)
+        else:
+            eng.cmd_analyze(sym, cfg["rebal"], cfg["entry"], cfg["ts_mult"])
     elif m in ("minggu", "week"):
         if a.risiko:
             cfg["week_risk_pct"] = a.risiko

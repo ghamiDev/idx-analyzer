@@ -33,9 +33,10 @@ Perangkat analisis teknikal & pendukung keputusan untuk saham **IDX (Bursa Efek 
 | `portfolio.py` | Status posisi terbuka: P&L, jarak stop/target, aturan keluar, ukuran lot. |
 | `stocknews.py` | Headline Google News RSS per emiten + penanda **umur berita** (segar/basi). |
 | `store.py` | Persistensi: `config.json`, `data/positions.json`, `data/trades.jsonl`, `history.csv`, `reports/`. Semua path relatif ke file ini, `encoding="utf-8"`. |
-| `ui.py` | Terminal UI `rich` berwarna (panel/tabel + spinner) dengan **tata letak adaptif** (lihat di bawah). Fallback teks polos kalau `rich` tak ada / output di-pipe. |
+| `ui.py` | Terminal UI `rich` berwarna (panel/tabel + spinner) dengan **tata letak adaptif**, **ikon judul & verdik** (tiga tier: `IDX_ICONS=emoji|symbol|ascii|none`, legend) dan **indikator proses** (`wait` beranimasi, `stage` untuk langkah yang mencetak hasilnya sendiri, `progress` untuk pemindaian massal). Fallback teks polos kalau `rich` tak ada / output di-pipe. |
 | `requirements.txt` | Daftar dependensi untuk mesin biasa (`pip install -r`). |
 | `setup-termux.sh` | Installer sekali-jalan untuk Termux/Android. |
+| `buka-terminal.cmd` | Peluncur Windows (cmd/PowerShell): buka `idx.py` di **Windows Terminal** supaya ikon emoji + warna penuh tergambar. |
 
 ---
 
@@ -96,10 +97,13 @@ python idx.py minggu                   # "dengan modal ini, saham apa layak beli
 python idx.py check BBCA               # keputusan 1 saham + rencana entry/stop/target + lot
 python idx.py pos add BBCA --lot 5 --harga 9000 --cat "buy on dip"
 python idx.py pos                      # status posisi terbuka + P&L live
+python idx.py backtest BBCA            # aturan yang sama atas sejarah: daftar transaksi + biaya dua sisi
+python idx.py peka BBCA                # grid 45 kombinasi ambang × stop × kalibrasi + vonis overfit
+python idx.py backtest --semua         # portofolio gabungan: satu modal, rebutan slot, cap likuiditas
 python idx.py cekdata --semua          # validasi seluruh watchlist
 ```
 
-Override sekali jalan (tidak disimpan): `--modal 250000000 --risiko 0.5 --entry 25 --ts 3 --top 10 --rebal 42`.
+Override sekali jalan (tidak disimpan): `--modal 250000000 --risiko 0.5 --entry 25 --ts 3 --top 10 --rebal 42 --slip 0.3`.
 
 ---
 
@@ -113,11 +117,14 @@ Override sekali jalan (tidak disimpan): `--modal 250000000 --risiko 0.5 --entry 
 | `minggu [<T>] [--kartu]` | Ranking horison 5 hari + rekam jejak + 1 rencana + berita. `<T>`/`--kartu` → tampilan kartu (BERITA → HASIL → PENDUKUNG → KEPUTUSAN). |
 | `scan [--top N]` / `analyze` / `score` | Pemindaian universe LQ40 dengan skor walk-forward. |
 | `market` | Panel kondisi pasar & geopolitik. |
-| `backtest <T>` | Statistik akurasi sinyal pada horizon terpilih. |
+| `backtest <T>` | Simulasi walk-forward 1 saham: aturan masuk/keluar yang sama dengan mode `check`, plus **daftar transaksi per posisi** dan **biaya dua sisi**. |
+| `backtest --semua [<T> ...]` | **Backtest portofolio**: beberapa saham rebutan satu modal — slot terbatas, risiko per posisi, cap porsi & likuiditas (ADV). Tanpa daftar ticker = pakai watchlist (sebatas `top`). |
+| `peka <T>` | **Uji kepekaan otomatis**: grid ambang skor × trailing stop × jarak kalibrasi (45 kombinasi) + vonis overfit. |
 | `pos [add/cut <T>]` | Status & pencatatan posisi terbuka (P&L, stop, skor, risiko tersisa). |
 | `cfg [show/set K V]` | Watchlist, modal, risiko, ambang. |
 | `hist [<T>] [--days N]` | Riwayat skor, delta, transaksi & rekap P&L terealisasi. |
 | `cekdata [<T> ...] [--semua]` | Asal-usul angka: sumber hidup/matinya, umur data, kecocokan bar harian vs kutipan live. |
+| `ikon` | Uji tampil di terminal sendiri: legenda, contoh verdik, contoh tabel & panel — untuk memastikan ikon benar-benar tergambar. |
 
 Mode bawaan engine `idx_analyzer` (`decide`, `week`) juga tersedia sebagai pilihan CLI.
 
@@ -142,6 +149,11 @@ Mode bawaan engine `idx_analyzer` (`decide`, `week`) juga tersedia sebagai pilih
 | `week_risk_pct` | 5.0 | Risiko per ide pada mode minggu. |
 | `week_max_pos_pct` | 0.9 | Porsi modal maksimum di mode minggu. |
 | `week_news_days` | 14 | Jendela umur berita yang dianggap relevan. |
+| `fee_buy_pct` | 0.15 | Fee beli (% dari nilai transaksi, belum termasuk slippage). |
+| `fee_sell_pct` | 0.25 | Fee jual + PPN jual (% dari nilai transaksi). |
+| `slip_pct` | 0.05 | Slippage tambahan **per sisi** — dipakai di `backtest`, `backtest --semua`, `peka`; ubah sekali jalan dengan `--slip 0.3`. |
+| `max_pos_pct` | 20.0 | Porsi ekuitas maksimum untuk satu posisi (cap ukuran di `backtest --semua`). |
+| `max_volume_pct` | 1.0 | Bagian maksimum dari nilai transaksi harian (ADV 20 hari) yang boleh dibeli — cap likuiditas. |
 
 Ubah lewat CLI: `python idx.py cfg set capital 5000000`.
 
@@ -164,6 +176,60 @@ Kontrol manual:
 
 Sudah disapu 24–120 kolom untuk tiga bentuk tabel terberat (scan 8 kolom, berita 6 kolom dengan judul panjang, posisi 10 kolom): 0 baris meluber, 0 nilai hilang. Mode polos tanpa `rich` ikut adaptif (daftar vertikal saat terminal sempit).
 
+### Ikon & kerapihan baca
+
+Setiap judul panel membawa ikon sesuai isinya, dan setiap verdik membawa ikon arah, jadi hasil bisa dipindai mata sebelum dibaca:
+
+| Ikon | Arti |
+|------|------|
+| 🚀 BELI KUAT · 🟢 BELI · 🚨 SIAGA · 👀 WATCHLIST · 🟡 PEGANG/HOLD · ⏳ TUNGGU · 🟠 KURANGI · 🔴 JUAL · ⛔ JUAL KUAT / HINDARI | arah verdik (naik → turun) |
+| 📡 | status data live (harga siapa, jam berapa, setua apa) |
+| 🛡️ | validasi/eviden — angka sudah dicocokkan dengan live |
+| 🌐 kondisi pasar · 📰 berita · ⚖️ keputusan · 📅 rencana/mingguan · 💰 ukuran/portofolio · ⚠️ anggaran risiko · 📖 cara baca/legenda · 🧭 menu · ⚙️ konfigurasi · 🧪 backtest/uji · 🔎 hasil scan · 🎯 level & target | pengelompokan blok |
+
+Padanan tier `symbol` (konsol Windows lama, semua satu kolom): `▲/▼` sinyal metode · `↑↑` BELI KUAT · `↑` BELI · `!` SIAGA · `◇` WATCHLIST · `—` HOLD/PEGANG · `…` TUNGGU · `↓` KURANGI · `▽` JUAL · `↓↓` JUAL KUAT · `√` validasi · `(•)` status data · `▌` analisa/scanner · `¤` ukuran/portofolio · `▪` berita · `○` kondisi pasar · `≈` keputusan · `□` rencana · `△` risiko · `≡` cara baca · `#` konfigurasi · `∴` backtest · `►` penanda rekaman.
+
+Baris `LEGENDA ...` ikut dicetak di panel MENU supaya tidak perlu menebak makna simbol.
+
+Kontrol:
+
+- `IDX_ICONS=emoji` (default di Termux/Windows Terminal/VS Code) · `symbol` · `ascii` · `none`.
+- Konsol Windows lama (cmd/PowerShell biasa) tidak sanggup menggambar emoji, jadi ada **tiga tier** yang dipilih otomatis:
+  1. **emoji** — terminal modern (juga dipakai saat `WT_SESSION`/VS Code terdeteksi).
+  2. **symbol** — konsol lama: simbol BMP satu kolom (`↑` BELI, `↓↓` JUAL KUAT, `√` validasi, `(•)` status data, `▮` analisa). Sebelum mode ini dipilih, program mencoba mengubah codepage output ke **UTF-8** (`SetConsoleOutputCP(65001)`) — tanpa itu `▲` muncul sebagai `^` dan `–` sebagai karakter rusak.
+  3. **ascii** — kalau UTF-8 pun ditolak, atau output di-pipe / `rich` tidak terpasang (padding dihitung per karakter): `+` BELI, `--` JUAL, `V` validasi, `(~)` status data.
+- Mode teks polos (tanpa `rich`) selalu pakai ASCII.
+- **Mau emoji penuh di Windows?** Konsol PowerShell/cmd lama (conhost) secara fisik tidak bisa menggambar emoji — tidak ada pengaturan yang mengubah itu. Buka jendelanya lewat **Windows Terminal**:
+
+  ```
+  buka-terminal.cmd            :: menu interaktif, ikon emoji penuh
+  buka-terminal.cmd brief      :: dashboard harian di Windows Terminal
+  ```
+
+  Script-nya mencoba `wt` dulu; kalau alias `wt` mati di Windows kamu, ia membuka Terminal lewat `shell:AppsFolder`. Alternatif manual: Settings → Apps → Advanced app settings → App execution aliases → nyalakan **Terminal**, lalu jalankan `wt python idx.py`.
+- Glyph yang punya dua bentuk (🛡 ⚖ ⚠ 📅 ⚙) ditulis dengan **U+FE0F** (emoji presentation selector) supaya terminal dan `rich` sepakat lebar 2 kolom — tanpa itu border panel bisa miring.
+- Lebar baris diukur dengan **kolom terminal** (`rich.cells.cell_len`), bukan jumlah karakter; kalau pakai `len()`, tiap ikon membuat baris bocor 1 kolom lalu dibungkus di tengah blok.
+- Ikon tidak pernah mengubah angka: yang berubah hanya penanda judul, penanda baris rekaman (`▸ KODE`) dan kolom verdik.
+- Di mode rekaman, label kolom disejajarkan (`lot 5 · avg 760`), kolom kosong tidak dicetak lagi sebagai label menggantung, header tabel diseragamkan KAPITAL.
+
+Mau memastikan ikon benar-benar tergambar di perangkat sendiri?
+
+```bash
+python idx.py ikon        # legenda + contoh verdik + contoh tabel & panel pada lebar terminal saat ini
+```
+
+`python idx.py ikon` mencetak mode yang terdeteksi beserta saran kalau ikon belum versi penuh. Kalau simbol masih kotak ▯/ karakter rusak di konsol Windows: buka **Windows Terminal** (dari Store, jalankan `wt` lalu `python idx.py`) untuk emoji penuh, atau naik-turunkan tier manual sampai ketemu yang bersih: `set IDX_ICONS=symbol` / `set IDX_ICONS=ascii` (PowerShell: `$env:IDX_ICONS="ascii"`). Di Termux, simbol kotak biasanya berarti font tidak memuat emoji → Preferences → Styles → Font.
+
+### Indikator proses
+
+Setiap langkah lambat menampilkan baris berputar `| ambil data… 3s` lalu ditutup `ok  ambil data… (3.4s)` — **termasuk langkah yang selesai dalam 0,1 s** (dulu langkah cepat sengaja dibisukan, itu penyebab "kadang tampil kadang tidak"). Aturannya:
+
+- Bingkai pertama ditulis sinkron, bukan menunggu thread, jadi tidak ada langkah yang lolos tanpa tampilan.
+- `wait` bersarang hanya menggambar yang terluar → tidak ada dua spinner saling menghapus baris.
+- Langkah yang mencetak panelnya sendiri (`analyze`, `score`, `backtest`) memakai `ui.stage()` (satu baris `… sedang mengerjakan`) karena spinner animatif akan menimpa panel tersebut.
+- Pemindaian 40 saham (`scan`, `minggu` ranking) memakai bar progres `[█░] n/40 ≈Ns lagi` — kini juga aktif di mode ranking, dulu dimatikan.
+- **Kalau output di-pipe/direkam** (`idx.py brief > log.txt`, `| tee`, `| less`) spinner sengaja tidak dicetak sama sekali; itu by design agar log bersih. Di Termux jalankan langsung di shell (atau `script -c` untuk merekam sambil tetap animasi).
+
 ---
 
 ## Sumber data & validasi
@@ -174,7 +240,7 @@ Sudah disapu 24–120 kolom untuk tiga bentuk tabel terberat (scan 8 kolom, beri
 
 **Jebakan simbol:** `BBCA` polos di Yahoo = ETF Amerika. Engine memaksa `.JK` dan **menolak** data berzona waktu ≠ +7, jadi tidak ada salah sekuritas senyap.
 
-Sinkronisasi live: bar hari ini diselaraskan ke harga terakhir sebelum menghitung stop/target/lot di jalur keputusan (`check`, `minggu`, `brief`, `pos`). **Pemindaian 40 saham sengaja tidak menyentuh live** (biaya per-ticker) — hal ini selalu diungkapkan di UI.
+**Basis skor vs basis harga (penting!):** skor walk-forward **selalu** dihitung dari bar harian resmi — `scan`, `check`, `minggu`, `pos`, dan `brief` membaca angka yang sama persis. Kutipan live (`check`, `minggu`, `brief`, `pos`) hanya dipakai sebagai **harga untuk stop/target/ukuran lot**; kalau harga live beda lebih dari satu tick dari bar terakhir, panel EVIDEN mencetak baris `Basis angka` yang menyebutkan keduanya. Dulu kutipan live ikut menimpa bar terakhir sebelum indikator dihitung, sehingga tabel ranking dan keputusan bisa menunjuk dua skor berbeda untuk saham yang sama (selisih sampai ±30 poin dari perbedaan harga 0,5%) — sekarang tidak bisa lagi. **Pemindaian seluruh universe sengaja tidak menyentuh live** (biaya satu request per ticker).
 
 ---
 
@@ -190,12 +256,18 @@ Sinkronisasi live: bar hari ini diselaraskan ke harga terakhir sebelum menghitun
 - **Trailing stop** = 2.5×ATR dari puncak sejak entry — aturan keluar berbasis risiko, bukan tebakan arah.
 - **Rekam jejak (edge vs base rate)** = seberapa sering sinyal serupa berakhir untung dibanding peluang acak. Angka tipis = keunggulan kecil.
 - **Umur berita** (kolom `umur`): "baru (<1 jam)" … "N.N hari lalu". Berita hanya **penanda perhatian**, bukan prediktor.
+- **`Basis angka`** (baris terakhir panel EVIDEN): menjelaskan bar mana yang menghasilkan skor dan harga mana yang dipakai untuk stop/target/lot. Kalau keduanya beda, keduanya dicetak — tidak ada angka yang diam-diam menimpa angka lain.
+- **`backtest` — kolom ALASAN KELUAR**: kalau hampir semua exit karena *trailing stop*, yang bekerja adalah disiplin keluar, bukan kemampuan memilih arah. `P&L BERSIH` sudah dipotong fee beli, fee jual, dan slippage. Baris bertanda `*` masih terbuka sampai bar terakhir.
+- **`peka` — KESIMPULAN GRID**: yang dicari bukan sel terbaik, tapi **seluruh grid searah**. `STABIL` = ≥80% kombinasi punya drawdown lebih dangkal dari beli-dan-tepak; `RENTAN / OVERFIT` = hasil bagus hanya tinggal di beberapa sel. Kalau median return masih negatif, "STABIL" berarti konsisten *lebih kecil rugi*, bukan konsisten untung.
+- **`backtest --semua` — panel SAAT SINYAL DITOLAK**: sinyal yang layak tapi tidak bisa dieksekusi tidak dibuang, dihitung per penyebab (slot penuh / batas porsi ekuitas / cap likuiditas ADV / uang tunai tak cukup 1 lot). Dominan "tak cukup uang tunai" = kendala modal, bukan sinyal buruk. Kolom `MODAL DIPAKAI` hanya berisi posisi yang benar-benar dieksekusi.
 
 ---
 
 ## Metodologi singkat
 
-Skor konfluensi dihitung **walk-forward**: bobot rekalibrasi tiap `rebal` bar memakai hanya data masa lalu, sehingga tidak ada *look-ahead*. Horison (mis. 20 hari utk engine, 5 hari utk mode minggu) menandai jendela evaluasi akurasi. Ukuran posisi memakai risiko-per-posisi (% modal ÷ jarak stop). Biaya bulat bolak-balik diasumsikan **0,4%** (beli ~0,15% + jual ~0,25%). Gerbang IHSG>EMA200 memfilter rezim.
+Skor konfluensi dihitung **walk-forward**: bobot rekalibrasi tiap `rebal` bar memakai hanya data masa lalu, sehingga tidak ada *look-ahead*. Horison (mis. 20 hari utk engine, 5 hari utk mode minggu) menandai jendela evaluasi akurasi. Ukuran posisi memakai risiko-per-posisi (% modal ÷ jarak stop). Gerbang IHSG>EMA200 memfilter rezim.
+
+**Biaya** dihitung **per sisi**, bukan rata-rata bulat: beli `fee_buy_pct` + jual `fee_sell_pct` (broker + PPN jual) + `slip_pct` di kedua sisi — default 0,20% masuk dan 0,30% keluar (≈0,50% per putaran). Eksekusi tetap diidealkan: harga penutupan, H+1 dari sinyal, tanpa gap intraday, tanpa auto-rejection, tanpa T+2 yang menahan uang. `backtest --semua` menjalankan scheduler dua tahap: daftar transaksi per saham dari skornya masing-masing, lalu dieksekusi kronologis dengan merebutkan satu modal — urutan antrean mengikuti urutan daftar ticker, jadi hasilnya sedikit bergantung pada urutan itu.
 
 ---
 
@@ -206,7 +278,9 @@ Skor konfluensi dihitung **walk-forward**: bobot rekalibrasi tiap `rebal` bar me
 3. **Berita = penanda attention**, hasil pembacaan kata kunci RSS, bukan sinyal sebab-akibat.
 4. **Feed publik bisa bolong/revisi** — panel VALIDASI DATA ada justru karena itu.
 5. **Universe tetap LQ45**; saham di luar daftar tidak dinilai sampai ditambahkan ke watchlist.
-6. **Termux tidak diverifikasi dari mesin ini** — portabilitas diaudit (0 impor Windows-only, 0 path absolut, semua `open()` UTF-8, shebang LF), tapi instal & akses jaringan hanya bisa dibuktikan di HP.
+6. **Backtest portofolio tidak mensimulasikan antrean eksekusi**: satu modal direbutkan secara kronologis, tapi pembeliannya di harga penutupan dan penolakan dicatat apa adanya. "Ditolak karena uang tunai tidak cukup" pada modal kecil adalah konsekuensi nyata dari lot 100 lembar — bukan bug.
+7. **Uji peka memakai satu rentang sejarah** yang sama untuk 45 kombinasi: grid mengukur *kepekaan parameter*, bukan *out-of-sample* sungguhan. Tambahkan data (atau ubah `--rebal`) lalu bandingkan.
+8. **Termux tidak diverifikasi dari mesin ini** — portabilitas diaudit (0 impor Windows-only, 0 path absolut, semua `open()` UTF-8, shebang LF), tapi instal & akses jaringan hanya bisa dibuktikan di HP.
 
 ---
 
@@ -219,4 +293,7 @@ Skor konfluensi dihitung **walk-forward**: bobot rekalibrasi tiap `rebal` bar me
 | Layout terlihat aneh / angka kurang | Auto-detect lebar terminal meleset | `export IDX_UI_WIDTH=<lebar asli>` (cek dengan `tput cols`). Selain itu sudah otomatis pindah ke tata letak rekaman. |
 | `ModuleNotFoundError: rich` | `rich` belum terpasang | `pip install rich` (kalau tidak, UI jatuh ke mode polos, tetap jalan). |
 | `numpy/pandas` gagal di Termux | Lewat pip, bukan pkg | `pkg install python-numpy python-pandas` (lihat `setup-termux.sh`). |
-| Angka berbeda dari sekuritas | Bar harian belum diselaraskan live | Jalankan `check`/`minggu`/`pos` (jalur keputusan sync live), bukan `scan`. |
+| Tidak ada baris loading sama sekali | Output di-pipe/direkam (bukan TTY) — spinner memang dimatikan agar log bersih | Jalankan langsung di shell Termux, tanpa `>` atau `| tee`. |
+| Ikon jadi kotak `□`/`?` | Font terminal tidak memuat emoji (Windows lama, Termux font default) | Naikkan/turunkan tier manual sampai bersih: `IDX_ICONS=symbol` (simbol BMP) → `ascii` → `none`. Di Windows, buka **Windows Terminal** (`wt`) untuk emoji penuh; di Termux pasang font emoji (Preferences → Styles → Font). `python idx.py ikon` mencetak mode yang terdeteksi + sarannya. |
+| Ikon jadi `%  @  (!)  (~)` **dan** tampilan tanpa warna | `rich` tidak terpasang di interpreter yang dipakai — program jatuh ke mode teks polos | `python -m pip install rich` (atau `bash setup-termux.sh`). Setelah itu ikon ikut naik ke tier emoji/simbol. Angka tidak pernah berubah oleh mode ikon apa pun. |
+| Angka berbeda dari sekuritas | Skor dihitung dari bar harian (bisa separuh jalan saat sesi), ukuran posisi dari harga live | Baca baris `Basis angka` di panel EVIDEN; jalankan ulang setelah penutupan untuk angka final. |

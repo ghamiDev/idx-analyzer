@@ -26,6 +26,12 @@ DEFAULTS = {
     "week_risk_pct": 5.0,         # % modal yang boleh hilang per trade mingguan
     "week_max_pos_pct": 0.9,      # porsi maksimum 1 posisi (modal kecil tidak terikat 20%)
     "week_news_days": 14,         # jendela hari untuk berita per saham
+    # --- biaya nyata (dipakai backtest / peka / portofolio) ---
+    "fee_buy_pct": 0.15,          # % fee broker sisi beli
+    "fee_sell_pct": 0.25,         # % fee broker sisi jual (PPh final 0,1% biasanya di sini)
+    "slip_pct": 0.05,             # % slippage per sisi
+    "max_pos_pct": 20.0,          # porsi maksimum 1 posisi pada backtest portofolio
+    "max_volume_pct": 1.0,        # tidak boleh masuk di atas N% nilai transaksi harian saham itu
 }
 
 
@@ -46,7 +52,8 @@ def save_config(cfg):
 _CAST = {"capital": int, "risk_pct": float, "max_total_risk_pct": float, "max_positions": int,
          "entry": float, "flat": float, "ts_mult": float, "top": int, "rebal": int,
          "week_horizon": int, "week_risk_pct": float, "week_max_pos_pct": float,
-         "week_news_days": int}
+         "week_news_days": int, "fee_buy_pct": float, "fee_sell_pct": float, "slip_pct": float,
+         "max_pos_pct": float, "max_volume_pct": float}
 _BOOL = {"gate"}
 
 
