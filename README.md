@@ -36,7 +36,8 @@ Perangkat analisis teknikal & pendukung keputusan untuk saham **IDX (Bursa Efek 
 | `kalender.py` | **Kalender peristiwa emiten** (mode `kalender`): tanggal rilis laporan keuangan berikutnya + tanggal ex-dividen, jarak dalam **hari bursa**, konsensus EPS/revenue kuartalan, DPS & cum-date. Dua permintaan per emiten (`Ticker.calendar` lalu `.info`), cache per kode di `data/kalender.json` + TTL. Setiap tanggal diberi label **asalnya** (`kalender sumber` vs `field cadangan`). Peristiwa juga muncul di `check`, `profil`, dan panel `brief`. **Tidak pernah ikut menghitung skor** — hanya lapisan peringatan. |
 | `screen.py` | **Saringan multi-kriteria seluruh universe** (mode `screen`): satu tabel `KRIT` memegang label, satuan, **arah mana yang baik**, field sumber, pita kewajaran nilai, dan kalimat penolakan — jadi filter, pengurutan, tabel, dan panel "kenapa tidak lolos" tidak mungkin berbeda pendapat. 5 preset (`value`/`deviden`/`tumbuh`/`sehat`/`terjangkau`) atau batas sendiri (`per_maks=12 roe_min=15`). Kolom SKOR memakai `compute_scan` **pada universe penuh** sehingga angkanya identik dengan mode `scan`; `--tanpa-skor` untuk jalan fundamental saja. Satu permintaan `.info` per emiten, cache per kode di `data/screen.json` + TTL. **Tidak pernah mengubah skor.** |
 | `store.py` | Persistensi: `config.json`, `data/positions.json`, `data/trades.jsonl`, `data/profil/` (cache profil), `data/kalender.json` (cache peristiwa), `data/screen.json` (cache metrik saringan), `history.csv`, `reports/`. Semua path relatif ke file ini, `encoding="utf-8"`. |
-| `ui.py` | Terminal UI `rich` berwarna (panel/tabel + spinner) dengan **tata letak adaptif**, **ikon judul & verdik** (tiga tier: `IDX_ICONS=emoji|symbol|ascii|none`, legend) dan **indikator proses** (`wait` beranimasi, `stage` untuk langkah yang mencetak hasilnya sendiri, `progress` untuk pemindaian massal). Fallback teks polos kalau `rich` tak ada / output di-pipe. |
+| `ui.py` | Terminal UI `rich` berwarna (panel/tabel + spinner) dengan **tata letak adaptif**, **ikon judul & verdik** (tiga tier: `IDX_ICONS=emoji|symbol|ascii|none`, legend) dan **indikator proses** (`wait` beranimasi, `stage` untuk langkah yang mencetak hasilnya sendiri, `progress` untuk pemindaian massal). Primitif layar keputusan: `kv()` baris metrik berlabel, `meter()` bar 0..1, `scorebar()` gauge skor berpusat nol, `keymap()` kaki layar — **gauge tidak pernah membawa digit**, angka aslinya selalu dicetak di sel sebelah, jadi tier ikon tak bisa mengubah isi (uji di `docs/DESAIN-UI.md` §7). Fallback teks polos kalau `rich` tak ada / output di-pipe. |
+| `docs/DESAIN-UI.md` | Konsep UI/UX layar terminal: prinsip P1–P7, token warna, peta layar→pertanyaan, tata letak `beranda`, primitif `ui.py`, dan tiga loop uji (tier ikon, sapuan lebar, fallback polos). Mockup: `docs/mockup-beranda.html` / `.png`. |
 | `requirements.txt` | Daftar dependensi untuk mesin biasa (`pip install -r`). |
 | `setup-termux.sh` | Installer sekali-jalan untuk Termux/Android. |
 | `buka-terminal.cmd` | Peluncur Windows (cmd/PowerShell): buka `idx.py` di **Windows Terminal** supaya ikon emoji + warna penuh tergambar. |
@@ -95,6 +96,7 @@ Kalau `cekdata` menampilkan harga + jam, seluruh mode lain praktis ikut jalan (k
 
 ```bash
 python idx.py                          # menu interaktif (pilih nomor)
+python idx.py beranda                  # ±10 detik: "hari ini saya ngapain?" (aksi + gerbang entry + radar + jadwal)
 python idx.py brief                    # dashboard keputusan lengkap
 python idx.py minggu                   # "dengan modal ini, saham apa layak beli 1 minggu?"
 python idx.py check BBCA               # keputusan 1 saham + rencana entry/stop/target + lot
@@ -120,7 +122,8 @@ Override sekali jalan (tidak disimpan): `--modal 250000000 --risiko 0.5 --entry 
 
 | Perintah | Fungsi |
 |----------|--------|
-| `python idx.py` / `menu` | Menu interaktif: pilih nomor (1–9, `0`, `b`, `p`, `s`, `f`, `k`, `c`) atau ketik perintah lengkap. `k` = kalender peristiwa, `c` = saringan saham. |
+| `python idx.py` / `menu` | Menu interaktif: pilih `h`, nomor (1–9, `0`), atau huruf (`b`, `p`, `s`, `f`, `k`, `c`) — atau ketik perintah lengkap. `h` = beranda, `k` = kalender peristiwa, `c` = saringan saham. |
+| `beranda [--refresh] [--top N]` | **Satu layar "hari ini saya ngapain"** (±10 detik, tanpa membuka 4 mode): `SEKARANG` (baris per posisi: aksi + **sebab yang menyebut angkanya** + P&L, lalu satu baris status gerbang entry: `BOLEH ENTRY` / `ENTRY DIBATASI 1/3` / `SLOT PENUH` / `JATAH RISIKO HABIS`) → `MOTOR KEPUTUSAN` (penyesuaian pasar, IHSG, breadth, tekanan berita, penalti sektor, risiko terkunci, slot — tiap angka dengan basisnya) → `RADAR` (5 teratas + gauge arah) → `KALENDER` → `CARA BACA & BATASAN` → keymap menu. **Layar ini tidak menghitung apa pun sendiri**: `SEKARANG` = baris `pos` (`pf.status`), `RADAR` = baris `scan` (`compute_scan`, lewat cache `history.csv` hari ini), `KALENDER` = cache `kalender`. Beda angka dengan mode aslinya = bug. `--refresh` memaksa walk-forward ulang (±2 menit). |
 | `brief [--refresh]` | Dashboard keputusan: panel pasar → scanner → portofolio → rencana aksi + panel `JADWAL YANG MENYERET POSISI INI` (murni dari cache kalender, tanpa permintaan jaringan tambahan). |
 | `check <T>` | Keputusan 1 saham: skor, rencana entry/stop/target, ukuran lot, validasi data live, konteks fundamental dari cache, + panel `PERISTIWA TERDEKAT` (rilis laporan/ex-dividen). |
 | `profil <T> [--refresh]` | **Profil fundamental 1 emiten**: identitas & usaha → tabel keuangan tahunan → rasio & kesehatan → **penanda** → valuasi analis → dividen & split → aksi korporasi → pemegang saham → proyek & rencana (berita bertema) → **peristiwa terdekat** (rilis laporan/ex-dividen dari cache kalender) → cara baca. `--refresh` memaksa tarik ulang; cache di `data/profil/<KODE>.json`. |
@@ -196,6 +199,8 @@ Kontrol manual:
 
 Sudah disapu 24–120 kolom untuk tiga bentuk tabel terberat (scan 8 kolom, berita 6 kolom dengan judul panjang, posisi 10 kolom): 0 baris meluber, 0 nilai hilang. Mode polos tanpa `rich` ikut adaptif (daftar vertikal saat terminal sempit).
 
+**Gauge adalah ornamen, bukan data.** `ui.meter()` (`▓▓▓▓░░░░` untuk breadth/jatah risiko) dan `ui.scorebar()` (gauge skor berpusat nol di layar `beranda`) tidak pernah menggambar digit: angkanya selalu dicetak di sel sebelah, dan skalanya disebut di caption (`±50`). Tier `ascii` menggantinya dengan `####----`, tier `none` menghapusnya sama sekali — isinya tetap utuh. Karena itu `beranda` lolos tiga loop uji `docs/DESAIN-UI.md` §7: multiset digit identik di keempat tier ikon, identik dari 40 sampai 140 kolom, dan tetap terbaca tanpa `rich`.
+
 ### Ikon & kerapihan baca
 
 Setiap judul panel membawa ikon sesuai isinya, dan setiap verdik membawa ikon arah, jadi hasil bisa dipindai mata sebelum dibaca:
@@ -205,7 +210,7 @@ Setiap judul panel membawa ikon sesuai isinya, dan setiap verdik membawa ikon ar
 | 🚀 BELI KUAT · 🟢 BELI · 🚨 SIAGA · 👀 WATCHLIST · 🟡 PEGANG/HOLD · ⏳ TUNGGU · 🟠 KURANGI · 🔴 JUAL · ⛔ JUAL KUAT / HINDARI | arah verdik (naik → turun) |
 | 📡 | status data live (harga siapa, jam berapa, setua apa) |
 | 🛡️ | validasi/eviden — angka sudah dicocokkan dengan live |
-| 🌐 kondisi pasar · 📰 berita · ⚖️ keputusan · 📅 rencana/mingguan · 💰 ukuran/portofolio · ⚠️ anggaran risiko · 📖 cara baca/legenda · 🧭 menu · ⚙️ konfigurasi · 🧪 backtest/uji · 🔎 hasil scan · 🎯 level & target | pengelompokan blok |
+| 🌐 kondisi pasar · 📰 berita · ⚖️ keputusan · 📅 rencana/mingguan · 💰 ukuran/portofolio · ⚠️ anggaran risiko · 📖 cara baca/legenda · 🧭 menu · ⚙️ konfigurasi · 🧪 backtest/uji · 🔎 hasil scan · 🔎 hasil scan · 🎯 level, target & layar beranda | pengelompokan blok |
 
 Padanan tier `symbol` (konsol Windows lama, semua satu kolom): `▲/▼` sinyal metode · `↑↑` BELI KUAT · `↑` BELI · `!` SIAGA · `◇` WATCHLIST · `—` HOLD/PEGANG · `…` TUNGGU · `↓` KURANGI · `▽` JUAL · `↓↓` JUAL KUAT · `√` validasi · `(•)` status data · `▌` analisa/scanner · `¤` ukuran/portofolio · `▪` berita · `○` kondisi pasar · `≈` keputusan · `□` rencana · `△` risiko · `≡` cara baca · `#` konfigurasi · `∴` backtest · `►` penanda rekaman.
 

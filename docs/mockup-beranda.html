@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>idx.py — konsep UI terminal (mockup)</title>
+<style>
+  :root{
+    --bg:#101014; --pane:#141419; --ink:#dcdcdc;
+    --cyan:#5fbcd3; --cyan-dim:#2f6d7d; --green:#7fd97f; --yellow:#e3d17a;
+    --orange:#f0a15c; --red:#ef6e6e; --red-deep:#c0392b; --magenta:#d9a2d9;
+    --dim:#7c7c86; --dimmer:#5a5a63; --line:#23232b; --paper:#0b0b0e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#1b1b20;color:var(--ink);
+       font:14px/1.65 "Cascadia Code","JetBrains Mono",ui-monospace,Consolas,monospace}
+  .wrap{max-width:1180px;margin:0 auto;padding:34px 22px 90px}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:.3px}
+  h2{font-size:15px;margin:46px 0 4px;color:var(--cyan);letter-spacing:1px;text-transform:uppercase}
+  h2 span{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0}
+  p.lead{color:var(--dim);margin:0 0 26px;max-width:960px}
+  .note{color:var(--dimmer);font-size:12.5px;max-width:960px;margin:10px 0 0}
+  /* jendela terminal */
+  .term{background:var(--paper);border:1px solid #2c2c36;border-radius:10px;
+        box-shadow:0 18px 50px -22px #000;overflow:hidden;margin:14px 0 4px}
+  .bar{display:flex;align-items:center;gap:10px;background:#18181e;border-bottom:1px solid #26262e;
+       padding:8px 13px;font-size:12px;color:var(--dim)}
+  .dot{width:10px;height:10px;border-radius:50%;background:#3a3a44;display:inline-block}
+  .bar b{color:var(--ink);font-weight:400}
+  .bar .rt{margin-left:auto;color:var(--dimmer)}
+  .scr{padding:14px 16px 16px;white-space:pre-wrap;word-break:break-word;tab-size:4}
+  /* bahasa panel rich */
+  .pn{border:1px solid var(--cyan-dim);border-radius:8px;padding:8px 12px;margin:0 0 11px}
+  .pn.gray{border-color:#2b2b33} .pn.red{border-color:#6d2b2b} .pn.yel{border-color:#6d5f2b}
+  .pn.grn{border-color:#2f5d2f} .pn.mag{border-color:#5d2f5d}
+  .t{color:var(--ink);font-weight:700;letter-spacing:.4px}
+  .i{color:var(--cyan)}                 /* ikon panel */
+  .k{color:var(--dim)}                  /* grey62: keterangan / dasar angka */
+  .kk{color:var(--dimmer)}
+  .g{color:var(--green)} .gw{background:var(--green);color:#08200b;padding:0 6px;border-radius:3px;font-weight:700}
+  .y{color:var(--yellow)} .o{color:var(--orange)} .r{color:var(--red)}
+  .rw{background:var(--red-deep);color:#fff;padding:0 6px;border-radius:3px;font-weight:700}
+  .m{color:var(--magenta)} .c{color:var(--cyan)}
+  .zd{color:var(--cyan);font-weight:700}      /* penanda zona ▌ */
+  .hd{color:var(--ink);font-weight:700;letter-spacing:.5px}
+  .gauge{color:var(--cyan)} .gaugeW{color:var(--green)} .gaugeR{color:var(--red)}
+  .row{display:grid;grid-template-columns:34px 62px 1fr auto;gap:6px;align-items:baseline}
+  .row .no{color:var(--dimmer)}
+  .num{font-variant-numeric:tabular-nums}
+  .cap{border-top:1px dashed #2b2b33;margin-top:8px;padding-top:7px;color:var(--dimmer);font-size:12.5px}
+  .keys{margin-top:12px;color:var(--dim);font-size:13px}
+  .keys b{color:var(--cyan);font-weight:400}
+  /* strip token */
+  .tok{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:11px;margin-top:12px}
+  .tok div{border:1px solid #2b2b33;border-radius:8px;padding:10px 12px;background:var(--pane)}
+  .tok code{color:var(--ink);font-size:12.5px}
+  .tok em{color:var(--dim);font-style:normal;font-size:12.5px}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:7px;vertical-align:-1px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.cols{grid-template-columns:1fr}.row{grid-template-columns:26px 56px 1fr}}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>idx.py — konsep UI terminal</h1>
+<p class="lead">Tiga layar konsep dalam bahasa visual aplikasi ini hari ini (panel rich,
+<code>LABEL ··· nilai</code>, tier ikon) — bukan tema baru. Angka di dalamnya <b>nyata</b>,
+ditarik 18-10-2026 16:32 dari <code>scan</code>, <code>pos</code>, <code>kalender</code>,
+<code>profil</code>; tidak ada satu pun digit yang dikarang untuk mockup ini.</p>
+
+<h2>A · <span>layar yang belum ada:</span> BERANDA</h2>
+<p class="lead" style="margin-bottom:14px">Satu layar untuk satu pertanyaan: “hari ini saya harus ngapain?”.
+Empat baris pertama sudah cukup untuk menutup laptop; sisanya bukti. Tidak ada angka baru —
+semua dipetik dari fungsi yang sudah dipakai <code>scan</code>/<code>pos</code>/<code>kalender</code>.</p>
+
+<div class="term">
+  <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <b>idx.py beranda</b><span class="rt">bar harian 18-10 · live 16:14 (±1 mnt) · cache 0,0 jam · 100 kolom</span></div>
+  <div class="scr">
+
+<div class="pn grn">
+<span class="zd">▌SEKARANG</span>  <span class="k">2 aksi · 0 entry baru</span>
+<div class="row" style="margin-top:6px"><span class="no"><span class="r">(!)</span></span><span class="r">PTBA</span>
+  <span><span class="gw">KELUAR</span>  harga 2.800 ≤ stop 2.937 · skor −26.3 <span class="k">· trailing tertendang</span></span>
+  <span class="num r">−258.000  −13.3%</span></div>
+<div class="row"><span class="no"><span class="r">(!)</span></span><span class="r">KLBF</span>
+  <span><span class="gw">KELUAR</span>  harga 675 ≤ stop 712 · skor −71.3 <span class="k">· bearish berat</span></span>
+  <span class="num r">−42.500  −11.2%</span></div>
+<div class="row"><span class="no"><span class="k">( )</span></span><span class="k">ENTRY</span>
+  <span><span class="y">GERBANG TERTUTUP</span>  IHSG 5.185 &lt; EMA200 · mood <span class="r">SANGAT BERISIKO</span>
+  <span class="k">· jadi daftar di bawah bukan suruhan beli</span></span><span></span></div>
+</div>
+
+<div class="cols">
+  <div class="pn gray">
+<span class="zd">▌MOTOR KEPUTUSAN</span>
+<div><span class="k">penyesuaian pasar </span><span class="r">−22.1</span>  <span class="k">penalti sektor </span><span class="r">−2.8</span></div>
+<div><span class="k">IHSG       </span><span class="gauge">▓▓▓▓▓▓▓▓▓▓</span> <span class="num">5.185,10</span> <span class="r num">−19,50%/20h</span></div>
+<div><span class="k">breadth    </span><span class="gaugeR">▓░░░░░░░░░</span> <span class="num">&gt;EMA50 0% · &gt;EMA200 2%</span> <span class="k">dari 40</span></div>
+<div><span class="k">berita     </span>248 judul <span class="r num">±0.46</span> <span class="k">tema: reputasi pasar 55 · MSCI</span></div>
+<div><span class="k">risiko     </span><span class="gauge">░░░░░░░░░░</span> <span class="num">0 dari 90.000</span> <span class="k">· slot 3/5</span></div>
+<div class="cap">gauge = ornamen arah, tidak membawa digit; angkanya selalu di sebelah kanan</div>
+  </div>
+  <div class="pn gray">
+<span class="zd">▌RADAR</span>  <span class="k">5 dari 40 · skor = angka <code>scan</code> saat yang sama</span>
+<div class="row"><span class="no">1</span><span class="g">MDKA</span><span><span class="gaugeW">▓▓▓▓▓▓▓▓▓░</span> <span class="num">+66.6</span> <span class="y">SIAGA</span></span><span class="num k">2.430</span></div>
+<div class="row"><span class="no">2</span><span class="g">AKRA</span><span><span class="gaugeW">▓▓▓▓▓▓▓▓▓░</span> <span class="num">+64.7</span> <span class="y">SIAGA</span></span><span class="num k">1.250</span></div>
+<div class="row"><span class="no">3</span><span class="g">BBNI</span><span><span class="gaugeW">▓▓▓▓▓▓▓▓▓░</span> <span class="num">+62.2</span> <span class="y">SIAGA</span></span><span class="num k">2.970</span></div>
+<div class="row"><span class="no">4</span><span class="g">CPIN</span><span><span class="gaugeW">▓▓▓▓▓▓▓░░░</span> <span class="num">+50.9</span> <span class="y">SIAGA</span></span><span class="num k">2.560</span></div>
+<div class="row"><span class="no">5</span><span class="g">PGAS</span><span><span class="gaugeW">▓▓▓▓▓▓▓░░░</span> <span class="num">+48.5</span> <span class="y">SIAGA</span></span><span class="num k">1.190</span></div>
+<div class="cap">semua SIAGA = maks 1/3 lot, stop ketat · yang tidak lolos saringanfundamental → <code>screen</code></div>
+  </div>
+</div>
+
+<div class="pn yel">
+<span class="zd">▌MENUNGGU 30 SESI</span>  <span class="k">tanggal yang bisa menendang stop</span>
+<div><span class="num y">H-1</span> Sen 19-10-2026 <b>PGAS</b> RILIS LAPORAN <span class="k">· perkiraan sumber, bukan pengumuman resmi · konsensus EPS dibuang (0,0065 di luar pita)</span></div>
+<div><span class="num y">H-2</span> Sel 20-10-2026 <b>BBCA</b> RILIS LAPORAN <span class="k">· konsensus EPS kuartal 123 · pendapatan 29.29 T</span></div>
+<div><span class="k">tidak diketahui: <b>PTBA*</b> <b>KLBF*</b> (dipegang) — sumber belum mengisi periode ini, <b>belum tentu tidak ada</b></span></div>
+</div>
+
+<div class="pn gray">
+<span class="zd">▌CARA BACA</span>
+<div><span class="k">· MENTAH = konfluensi walk-forward dari bar harian · AKHIR = + penyesuaian pasar &amp; penalti sektor · basis skor ≠ basis harga live (harga live hanya untuk stop/target/lot)</span></div>
+<div><span class="k">· P&amp;L sudah dipotong fee beli 0,15% / jual 0,25%; tanggal belum diverifikasi silang ke IDX (endpoint 403); hitungan sesi tidak mengurangi libur nasional</span></div>
+<div><span class="k">· layar ini tidak menghitung ulang apa pun — angka yang sama persis dengan <code>idx.py scan</code> / <code>pos</code> pada saat yang sama</span></div>
+</div>
+
+<div class="keys"><b>[b]</b>eranda &nbsp; <b>[c]</b>ek KODE &nbsp; <b>[s]</b>can &nbsp; <b>[f]</b>ilter screen &nbsp; <b>[k]</b>alender &nbsp; <b>[p]</b>os &nbsp; <b>[u]</b>lang 60 dtk &nbsp; <b>[q]</b>uit</div>
+  </div>
+</div>
+<p class="note">Panel hijau = boleh · kuning = boleh tapi kecil/tunggu · merah = keluar ·
+abu = konteks · angka kuning-magentanya selalu menyebut dasar hitungnya.</p>
+
+<h2>B · <span>yang ada hari ini, dirapatkan:</span> CHECK satu emiten</h2>
+<p class="lead" style="margin-bottom:14px">Isinya sudah benar (kartu <code>check</code>), tapi alasannya
+tersebar di 5 panel. Konsep: satu blok keputusan di atas, bukti di bawah, dan status data
+dipindah ke baris kepala supaya tidak perlu mode terpisah.</p>
+
+<div class="term">
+  <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <b>idx.py check PGAS</b><span class="rt">bar 18-10 · live 16:14 · cache profil 0,1 jam</span></div>
+  <div class="scr">
+
+<div class="pn yel" style="border-width:2px">
+<span class="hd">⚖  KEPUTUSAN · PGAS</span>   <span class="y">SIAGA — maks 1/3 lot, stop ketat</span>  <span class="k">(skor akhir +48.5 · mentah +70.6)</span>
+<div><span class="k">kenapa: </span>konfluensi tren jalan · gerbang pasar IHSG &lt; EMA200 <span class="r">menahan ukuran</span> · penalti sektor −2.8 · rilis laporan <span class="r">H-1</span></div>
+</div>
+
+<div class="cols">
+  <div class="pn gray">
+<span class="zd">▌RENCANA</span>
+<div><span class="k">harga (live)     ··· </span><span class="num">1.190</span></div>
+<div><span class="k">stop 2,5×ATR     ··· </span><span class="num r">1.048</span> <span class="k">(−11,9%)</span></div>
+<div><span class="k">target           ··· </span><span class="num g">1.463</span> <span class="k">(+22,9%)</span></div>
+<div><span class="k">ukuran           ··· </span><span class="num">1 lot</span> <span class="k">· jatah risiko 30.000 · likuid cukup</span></div>
+<div class="cap">basis skor = bar harian 18-10 (5.185 IHSG); harga live hanya untuk stop/target/lot</div>
+  </div>
+  <div class="pn gray">
+<span class="zd">▌KONTEKS (cache-only, tidak ikut skor)</span>
+<div><span class="k">PER 7.5 </span><span class="k">(12 bln)</span> · <span class="k">PBV </span><span class="r">tidak sebanding</span> · <span class="k">ROE 10.1%</span></div>
+<div><span class="k">div 10.6% (12 bln) · laba FY2025 </span><span class="r">−36.6%</span></div>
+<div><span class="r">(!) DUA MATA UANG</span> <span class="k">— laporan USD, harga rupiah; tabel keuangan &amp; nilai buku ikut USD, tidak dikonversi</span></div>
+<div><span class="r">(!) rilis laporan 19-10-2026</span> <span class="k">— stop bisa tertendang satu gap pembukaan</span></div>
+<div class="cap">angka fundamental di atas tidak ikut menghitung skor</div>
+  </div>
+</div>
+
+  </div>
+</div>
+
+<h2>C · Token, komponen primitif &amp; tier ikon</h2>
+
+<div class="tok">
+  <div><span class="sw" style="background:var(--green)"></span><code>aksi.positif</code> — green / bold white on green<br><em>BOLEH: BELI, PLUS</em></div>
+  <div><span class="sw" style="background:var(--yellow)"></span><code>aksi.waspada</code> — yellow<br><em>KECIL/TUNGGU: SIAGA, HOLD, PERHATIAN</em></div>
+  <div><span class="sw" style="background:var(--red)"></span><code>aksi.negatif</code> — orange_red1 → bold white on red<br><em>KELUAR: JUAL, KURANGI, BAHAYA</em></div>
+  <div><span class="sw" style="background:var(--cyan)"></span><code>fakta.netral</code> — cyan<br><em>KONTEKS: WATCHLIST, IDENTITAS, LANGKAH</em></div>
+  <div><span class="sw" style="background:var(--dim)"></span><code>fakta.samar</code> — grey62/58<br><em>dasar angka, satuan, umur cache</em></div>
+  <div><span class="sw" style="background:var(--magenta)"></span><code>bahasa.tujuan</code> — magenta<br><em>angka sumber yang belum diuji: analis, konsensus</em></div>
+</div>
+
+<div class="term" style="margin-top:18px">
+  <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <b>komponen usulan di ui.py</b><span class="rt">pseudo-render, semua fallback ke teks polos</span></div>
+  <div class="scr">
+<div><span class="k">ui.kv(</span>"harga (live)", <span class="num">1.190</span>, ket=<span class="k">"16:14, jeda ±1 mnt"</span><span class="k">)</span>
+   →  harga (live) ··· <span class="num">1.190</span> <span class="k">16:14, jeda ±1 mnt</span></div>
+<div><span class="k">ui.meter(</span>0.0<span class="k">,</span> level=<span class="k">"red"</span><span class="k">)</span>
+   →  breadth &gt;EMA50 <span class="gaugeR">▓░░░░░░░░░</span> <span class="num">0%</span> <span class="k">· gauge tidak pernah satu-satunya sumber nilai</span></div>
+<div><span class="k">ui.scorebar(</span>+48.5<span class="k">)</span>
+   →  <span class="gaugeW">───▓▓▓▓▓▓●▓▓░░</span> <span class="num">+48.5</span> <span class="k">· digitnya tetap teks, jadi tier ikon tak mengubahnya</span></div>
+<div><span class="k">ui.zone(</span>"RADAR", kiri=…, kanan=…, lebar_min=110<span class="k">)</span>
+   →  dua kolom di ≥110; di 100 tetap satu kolom; di 40 turun jadi kartu vertikal <span class="k">— tidak pernah memotong isi</span></div>
+<div class="cap">tier ikon: emoji 🚨 · symbol ! · ascii (!) · none (kosong) — kata “BAHAYA/PERHATIAN/PLUS/INFO” tidak pernah hilang, warna bukan satu-satunya tanda</div>
+  </div>
+</div>
+
+<h2>D · Cara mockup ini ditolak atau diterima</h2>
+<p class="lead" style="margin-bottom:10px">Satu perubahan UI dianggap selesai hanya kalau tiga
+perintah ini hijau — aturan yang sama sudah dipakai di modul <code>screen</code> dan
+<code>profil</code>:</p>
+<div class="term"><div class="scr"><span class="k">$</span> for t in emoji symbol ascii none; do IDX_ICONS=$t python idx.py beranda | grep -v 'hari lalu' | grep -oE '[0-9][0-9.,]*' | md5sum; done   <span class="g"># 4 hash harus sama</span>
+<span class="k">$</span> for w in 40 60 80 100 118 140; do IDX_UI_WIDTH=$w python idx.py beranda | wc -l; done                                          <span class="g"># tidak ada yang hilang</span>
+<span class="k">$</span> python -c "import ui; ui.HAS_RICH=False"  # lalu jalankan semua mode                                                       <span class="g"># teks polos tetap terbaca</span></div></div>
+<p class="note">Konsep lengkap + alamat fungsi: <code>docs/DESAIN-UI.md</code>. Angka pada layar A/B/C
+di file ini berasal dari <code>idx.py scan</code>, <code>pos</code>, <code>kalender PGAS BBCA</code>,
+<code>check PGAS</code>, <code>profil PGAS</code> pada 18-10-2026 — kalau angka hari ini berbeda,
+yang salah adalah tanggalnya, bukan mockup-nya.</p>
+
+</div></body>
+</html>

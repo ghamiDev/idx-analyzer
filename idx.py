@@ -1,6 +1,8 @@
 """IDX Decision Desk — satu pintu untuk semua mode analisa & pendukung keputusan.
 
   python idx.py                       # MENU interaktif: pilih nomor, perintah dijalankan
+  python idx.py beranda                 # satu layar "hari ini saya ngapain": aksi posisi + gerbang
+                                        # entry + radar + jadwal; angkanya dibaca dari scan/pos/kalender
   python idx.py brief                 # dashboard keputusan: pasar → scanner → portofolio → aksi
   python idx.py brief --refresh       # paksa hitung ulang (tanpa memakai riwayat skor hari ini)
   python idx.py check <TICKER>        # keputusan 1 saham + rencana entry/stop/target + ukuran lot
@@ -193,6 +195,24 @@ def _live_check(code, df=None):
         return [f"[yellow]X Perhatian:[/] pemeriksaan data gagal ({type(e).__name__}: {e})"], None
 
 
+def _scan_cached(cached, ms):
+    """Rekontruksi scanner dari riwayat skor hari ini: MENTAH diambil dari cache, penyesuaian
+    pasar & sektor dihitung ulang dengan kondisi terkini. `brief` dan `beranda` memakai fungsi
+    yang sama — tidak boleh ada dua cara membangun tabel skor."""
+    gate_now = bool(eng.index_gate().iloc[-1])
+    adj = ms["adjust"] if ms else 0.0
+    by = {r["ticker"]: r for r in cached}
+    res = []
+    for t in by:
+        sp = market_state.sector_penalty(t, ms) if ms else 0.0
+        raw = float(by[t]["raw"])
+        res.append({"ticker": t, "raw": raw, "final": float(np.clip(raw + sp + adj, -100, 100)),
+                    "sector_adj": sp, "regime": by[t]["regime"], "close": float(by[t]["close"]),
+                    "gate": gate_now, "atr_pct": float("nan"), "conf": float("nan")})
+    res.sort(key=lambda r: -r["final"])
+    return res, gate_now
+
+
 def cmd_brief(cfg, refresh=False, export=True, top=None):
     uni = _universe(cfg)
     today = dt.date.today().isoformat()
@@ -209,17 +229,7 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
 
     cached = [] if refresh else [r for r in store.read_history(last_n_days=1) if r["date"] == today]
     if len(cached) >= max(5, len(uni) // 2):
-        gate_now = bool(eng.index_gate().iloc[-1])
-        adj = ms["adjust"] if ms else 0.0
-        by = {r["ticker"]: r for r in cached}
-        res = []
-        for t in by:
-            sp = market_state.sector_penalty(t, ms) if ms else 0.0
-            raw = float(by[t]["raw"])
-            res.append({"ticker": t, "raw": raw, "final": float(np.clip(raw + adj + sp, -100, 100)),
-                        "sector_adj": sp, "regime": by[t]["regime"], "close": float(by[t]["close"]),
-                        "gate": gate_now, "atr_pct": float("nan"), "conf": float("nan")})
-        res.sort(key=lambda r: -r["final"])
+        res, _ = _scan_cached(cached, ms)
         ui.info_panel("SCANNER", [
             "[dim]skor teknis diambil dari perhitungan hari ini (hemat waktu); penyesuaian pasar & sektor "
             "tetapi dihitung ulang dengan kondisi terkini — pakai --refresh untuk menghitung ulang semuanya[/]"],
@@ -335,6 +345,221 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
 
 
 LOT = 100
+
+
+# --------------------------------------------------------------- beranda
+
+def _gerbang(cfg, res, held, budg, ms, gate):
+    """Status 'boleh entry apa tidak' untuk zona SEKARANG — dibaca dari angka yang sama dengan
+    yang dipakai `brief` menyusun rencana aksi, bukan dari keputusan baru."""
+    mood = ui.mood_markup(ms["mood"]) if ms else "[grey62]kondisi pasar tidak diambil[/]"
+    adj = f" · penyesuaian {ms['adjust']:+.1f}" if ms else ""
+    if not res:
+        return ("SKOR BELUM ADA", "scanner belum pernah dihitung — jalankan [bold]idx.py scan[/] "
+                "atau [bold]idx.py beranda --refresh[/]")
+    k = [r for r in res if r["final"] >= cfg["entry"] and r["ticker"] not in held]
+    nama = ", ".join(co.code_of(r["ticker"]) for r in k[:3])
+    if not k:
+        return ("TIDAK ADA KANDIDAT", f"skor tertinggi {res[0]['final']:+.1f} < ambang entry "
+                f"{cfg['entry']:+.0f}{adj} · {mood}")
+    if budg["slots"] <= 0:
+        return (f"SLOT PENUH {cfg['max_positions']}/{cfg['max_positions']}",
+                f"{len(k)} kandidat di atas ambang tidak mendapat slot — tutup posisi dulu lewat "
+                f"[bold]idx.py pos[/] · {mood}")
+    if budg["room"] <= 0:
+        return ("JATAH RISIKO HABIS", f"terkunci {budg['used']:,.0f} dari {budg['cap']:,.0f} — "
+                f"posisi baru menambah risiko agregat di atas {cfg['max_total_risk_pct']}% modal · {mood}")
+    if cfg["gate"] and not gate:
+        return (f"ENTRY DIBATASI 1/3 · {nama}", f"gerbang IHSG>EMA200 tertutup{adj} · "
+                f"{len(k)} kandidat ≥ {cfg['entry']:+.0f} · sisa risiko {budg['room']:,.0f} · {mood}")
+    return (f"BOLEH ENTRY · {nama}", f"gerbang terbuka{adj} · {len(k)} kandidat ≥ {cfg['entry']:+.0f} · "
+            f"sisa risiko {budg['room']:,.0f} · hitung lot: [bold]idx.py check {co.code_of(k[0]['ticker'])}[/]")
+
+
+def cmd_beranda(cfg, refresh=False, top=5, scale=50.0):
+    """Layar 'hari ini saya ngapain' — satu layar, tanpa membuka 4 mode.
+
+    Syarat masuk (DESAIN-UI.md §5): layar ini TIDAK menghitung apa pun yang tidak dihitung
+    `scan`, `pos`, atau `kalender`. Zona SEKARANG = baris `pos`, RADAR = baris `scan`,
+    KALENDER = cache `kalender`. Kalau suatu angka tidak ada di sana, ia tidak muncul di sini.
+    """
+    uni = _universe(cfg)
+    today = dt.date.today().isoformat()
+    ms = _market(cfg, fresh=refresh)
+    cached = [] if refresh else [r for r in store.read_history(last_n_days=1) if r["date"] == today]
+    dari_cache = len(cached) >= max(5, len(uni) // 2)
+    if dari_cache:
+        res, gate = _scan_cached(cached, ms)
+    else:
+        with ui.wait(f"menghitung skor walk-forward {len(uni)} saham…"):
+            res, ms = eng.compute_scan(uni, ms, rebal=cfg["rebal"])
+        store.append_history(res, today)
+        gate = bool(res[0]["gate"]) if res else False
+
+    p = pf._load()
+    rows = []
+    if p:
+        with ui.wait(f"menilai {len(p)} posisi terbuka…"):
+            for t, pos in p.items():
+                try:
+                    rows.append(pf.status(t, pos, cfg, ms=ms))
+                except (SystemExit, Exception) as e:  # noqa: BLE001
+                    print(f"  skip {t}: {e}", file=sys.stderr)
+        rows = [r for r in rows if r]
+    budg = pf.budget(rows, cfg)
+
+    mac = (ms or {}).get("macro") or {}
+    lv = mac.get("IHSG_live") or {}
+    sub = [f"{dt.datetime.now():%a %d-%m-%Y %H:%M}",
+           f"{len(rows)} posisi · {len(uni)} saham",
+           f"skor {'cache hari ini' if dari_cache else 'baru dihitung'}"]
+    if ms:
+        sub.append(f"pasar {ms['ts']}")
+    if lv.get("time"):
+        umur = lv.get("age_min")
+        tua = (f"{umur / 60:.0f} jam" if umur and umur >= 120 else f"±{round(umur or 0)} mnt") \
+            if umur is not None else "umur tidak dikirim"
+        sub.append(f"live {str(lv['time'])[11:16]} WIB {tua}"
+                   + (" · periksa: idx.py cekdata" if lv.get("stale") else ""))
+    ui.header("BERANDA", " · ".join(sub))
+
+    trs = []
+    for r in sorted(rows, key=lambda x: (not x["exit_now"], x["pnl_pct"])):
+        sb = [f"harga {r['px']:,.0f} ≤ stop {r['eff_stop']:,.0f}" if r["px"] <= r["eff_stop"] else
+              f"harga {r['px']:,.0f} · stop {r['eff_stop']:,.0f} "
+              f"({r['dist_stop_pct']:.1f}% di atas)" if r["dist_stop_pct"] > 0 else
+              f"harga {r['px']:,.0f} · stop {r['eff_stop']:,.0f} tertembus"]
+        sb.append(f"skor {r['score']:+.1f} ≤ {cfg['flat']:+.0f}" if r["score"] <= cfg["flat"]
+                  else f"skor {r['score']:+.1f}")
+        if r.get("note_out"):
+            sb.append(r["note_out"])
+        pc = "green" if r["pnl"] >= 0 else "red"
+        trs.append((f"[bold]{co.code_of(r['ticker'])}[/]", ui.verdict_markup(r["action"]),
+                    " · ".join(sb), f"[{pc}]{r['pnl']:,.0f} ({r['pnl_pct']:+.1f}%)[/]"))
+    ga, gs = _gerbang(cfg, res, set(p), budg, ms, gate)
+    trs.append(("[grey62]ENTRY BARU[/]", f"[cyan]{ga}[/]", gs, "[grey62]—[/]"))
+    urg = sum(1 for r in rows if r["exit_now"])
+    ui.table(["KODE", "AKSI", "SEBAB", "P&L"], trs,
+             caption=f"SEKARANG — {urg} posisi memicu aturan keluar, {len(rows)} dipantau · "
+                     f"aturan: harga ≤ stop/trailing {cfg['ts_mult']}×ATR ATAU skor ≤ {cfg['flat']:+.0f} "
+                     "setelah ≥5 hari")
+
+    b, n = (ms or {}).get("breadth") or {}, (ms or {}).get("news") or {}
+    ih = mac.get("IHSG") or {}
+    kena = [r for r in res if r["sector_adj"]]
+    lw = max([len(x[0]) for x in (("penyesuaian pasar",), ("risiko terkunci",), ("breadth >EMA50",),
+                                  ("penalti sektor",))] + [18])
+    L = []
+
+    def add(label, nilai, ket="", level=None):
+        L.append(ui.kv(label, nilai, ket, level, lw))
+
+    if ms:
+        col = "green" if ms["adjust"] >= 0 else ("yellow" if ms["adjust"] > -8 else "red")
+        add("penyesuaian pasar", f"{ms['adjust']:+.1f}", f"mood {ui.mood_markup(ms['mood'])} · rentang ±30",
+            col)
+        if ih:
+            add("IHSG", f"{ih['last']:,.0f}",
+                f"20 hari {ih['chg20']:+.1f}% · volatilitas {ih['hv20']:.1f}%" +
+                (f" · bar indikator {ih['last_daily']:,.0f}" if ih.get("last_daily") else ""),
+                "green" if (ih.get("chg20") or 0) >= 0 else "red")
+        if b:
+            wide = b["pct>EMA50"]
+            add("breadth >EMA50", f"{wide * 100:.0f}%",
+                " ".join(x for x in [ui.meter(wide, 10, "green" if wide > 0.6 else
+                                               ("yellow" if wide > 0.4 else "red")),
+                                     f"dari {b['n']} saham yang muat datanya"] if x),
+                "red" if wide < 0.4 else "yellow")
+            if not np.isnan(b.get("pct>EMA200") or np.nan):
+                add("breadth >EMA200", f"{b['pct>EMA200'] * 100:.0f}%",
+                    " ".join(x for x in [ui.meter(b["pct>EMA200"], 10),
+                                         f"dari {b['n']} saham"] if x))
+        else:
+            add("breadth", "tidak diketahui", "sumber tidak mengembalikan satu pun bar yang cukup "
+                "panjang — mood dihitung tanpa lapisan ini")
+        if n:
+            add("berita", f"{n['n']} judul",
+                f"skor risiko {n['risk']:+.2f} (positif = berisiko)" +
+                (f" · sektor tertekan: {', '.join(n['sektor_panas'])}" if n["sektor_panas"] else ""))
+        else:
+            add("berita", "tidak diketahui", "semua feed RSS gagal — penyesuaian pasar dihitung tanpa "
+                "lapisan berita")
+        add("penalti sektor", f"{len(kena)} saham",
+            ("tertekan berita: " + ", ".join(f"{co.code_of(r['ticker'])} {r['sector_adj']:+.1f}"
+                                             for r in kena[:4])) if kena else
+            "tidak ada sektor yang sedang ditekan berita")
+    else:
+        add("kondisi pasar", "GAGAL DIAMBIL", "modul market_state tidak mengembalikan apa pun — "
+            "skor yang tampil di sini adalah skor MENTAH tanpa penyesuaian")
+    bobok = [co.code_of(r["ticker"]) for r in rows if r["px"] <= r["eff_stop"]]
+    add("risiko terkunci", f"{budg['used']:,.0f}",
+        " ".join(x for x in [ui.meter(budg["used"] / budg["cap"], 10,
+                                      "green" if budg["used"] <= budg["cap"] else "red")
+                             if budg["cap"] else "",
+                            f"dari jatah {budg['cap']:,.0f} ({budg['used_pct']:.2f}% modal dari batas "
+                            f"{budg['cap_pct']}%)",
+                            f"{', '.join(bobok)} sudah di bawah stop — risikonya tidak lagi "
+                            "terbatas pada angka ini" if bobok else ""] if x),
+        "green" if budg["used"] <= budg["cap"] else "red")
+    add("slot posisi", f"{budg['slots']} tersisa",
+        f"dari {cfg['max_positions']} · jatah per posisi {budg['per_position']:,.0f} "
+        f"({cfg['risk_pct']}% modal)")
+    ui.info_panel("MOTOR KEPUTUSAN · kenapa skor digeser", L,
+                  "orange_red1" if ms and ms["adjust"] <= -8 else "cyan")
+
+    rr = []
+    for i, r in enumerate(res[:top], 1):
+        rr.append((str(i), f"[bold]{co.code_of(r['ticker'])}[/]",
+                   f"[{'green' if r['final'] >= cfg['entry'] else 'red' if r['final'] <= -5 else 'grey74'}]"
+                   f"{r['final']:+.1f}[/]", ui.scorebar(r["final"], -scale, scale, 12),
+                   ui.verdict_markup(eng.verdict(r["final"], r["gate"])), f"{r['close']:,.0f}"))
+    if rr:
+        ui.table(["#", "KODE", "SKOR AKHIR", "gauge", "VERDIK", "HARGA BAR"], rr,
+                 caption=f"RADAR {top} TERATAS dari {len(res)} saham yang dinilai — angka yang sama "
+                         f"dengan [bold]idx.py scan[/] · gauge hanya ornamen arah, skalanya ±{scale:.0f}")
+    win = int(cfg.get("kal_days", 30))
+    urut, kode = set(), []
+    for t in [r["ticker"] for r in rows] + [r["ticker"] for r in res[:top]]:
+        if t not in urut:
+            urut.add(t)
+            kode.append(t)
+    if kode:
+        with ui.wait("merangkum jadwal dari cache kalender…"):
+            ev = kal.brief_events(kode, cfg, window=win)
+        ui.info_panel(f"KALENDER {win} SESI KE DEPAN", ev, "yellow")
+
+    ui.info_panel("CARA BACA & BATASAN", [
+        "· Urutan layar = urutan kerja: SEKARANG (lakukan ini) → MOTOR (kenapa skor digeser) → "
+        "RADAR (siapa berikutnya) → KALENDER (tanggal yang bisa menendang stop) → batasan.",
+        "· [bold]Tidak ada angka baru.[/] SEKARANG = baris yang sama dengan [bold]idx.py pos[/], "
+        "RADAR = baris yang sama dengan [bold]idx.py scan[/], KALENDER = cache "
+        "[bold]idx.py kalender[/]. Beda angka antar layar = bug, bukan pilihan tampilan.",
+        "· HARGA BAR = penutupan bar harian sumber, BUKAN kutipan live. Untuk eksekusi pakai "
+        "[bold]idx.py check <KODE>[/] (membandingkan bar dengan kutipan ±1 menit); kesegaran "
+        "seluruhnya: [bold]idx.py cekdata[/].",
+        "· SKOR MENTAH = konfluensi teknis walk-forward; AKHIR = mentah + penyesuaian pasar + "
+        "penalti sektor. Penyesuaian pasar [bold]bukan prediktor[/] — hanya penanda tekanan, "
+        "dipakai untuk mengecilkan posisi, bukan membalik arah.",
+        "· Tanggal kalender = estimasi sumber Yahoo (endpoint IDX resmi menjawab 403), jaraknya "
+        "dihitung dalam sesi Senin–Jumat tanpa mengurangi libur nasional. Baris 'tidak diketahui' "
+        "berarti sumber tidak punya tanggalnya — [bold]bukan[/] berarti tidak ada peristiwa.",
+        "· Sistem ini [bold]pengendali risiko[/], bukan peramal: edge-nya di disiplin keluar dan "
+        "drawdown, bukan akurasi arah — uji sendiri lewat [bold]idx.py backtest --semua[/].",
+    ] + ([f"· Skor hari ini dibaca dari cache {store.HIST_FILE} (hemat ±2 menit); "
+          "penyesuaian pasar tetap dihitung ulang. Paksa ulang: [bold]idx.py beranda --refresh[/]."]
+         if dari_cache else
+         [f"· Skor dihitung ulang barusan (walk-forward {len(uni)} saham) dan disimpan ke "
+          f"{store.HIST_FILE} — layar berikutnya hari ini membacanya dari cache."]), "magenta")
+
+    ui.info_panel("LANGKAH BERIKUT", [
+        "· Ada yang harus dijalankan hari ini? Catat eksekusinya: "
+        "[bold]idx.py pos cut <KODE> --lot N --harga X[/]",
+        "· Mau angka satu sahamnya: [bold]idx.py check <KODE>[/] · jawaban 1 minggu: "
+        "[bold]idx.py minggu[/]",
+        "· Dashboard panjang (scanner penuh + rekap delta + laporan markdown): [bold]idx.py brief[/]",
+        "· Layar ini hanya membaca; tidak ada order yang dikirim."], "cyan")
+    ui.keymap([("h", "beranda"), ("5", "check KODE"), ("1", "minggu"), ("6", "pos"),
+               ("k", "kalender"), ("c", "screen"), ("4", "brief"), ("q", "keluar")], "menu")
 
 
 def export_report(cfg, res, ms, rows, budg, plan, date):
@@ -707,6 +932,8 @@ def render_minggu(d, best, ranked, ns, news, cfg, H):
 # --------------------------------------------------------------- menu
 
 MENU = [
+    ("h", "beranda — satu layar 'hari ini saya ngapain': aksi posisi + gerbang entry + radar + jadwal",
+     ["beranda"]),
     ("1", "minggu — saham apa yang layak ditahan 1 minggu", ["minggu"]),
     ("2", "minggu <KODE> — kartu 1 saham: berita → analisa → keputusan", ["minggu", "{T}"]),
     ("3", "minggu --modal <Rp> --top <N>", ["minggu", "--modal", "{M}", "--top", "{N}"]),
@@ -790,12 +1017,13 @@ def cmd_menu(cfg):
                     "--top", _ask("jumlah baris ranking", "8")]
         elif pick in dict((k, a) for k, _, a in MENU):
             argv = _fill(dict((k, a) for k, _, a in MENU)[pick], cfg)
-        elif pick.split()[0] in ("minggu", "week", "brief", "check", "decide", "pos", "cfg", "hist",
-                                 "scan", "analyze", "score", "market", "backtest", "cekdata", "ikon",
-                                 "peka", "profil", "kalender", "screen"):
+        elif pick.split()[0] in ("minggu", "week", "beranda", "brief", "check", "decide", "pos", "cfg",
+                                 "hist", "scan", "analyze", "score", "market", "backtest", "cekdata",
+                                 "ikon", "peka", "profil", "kalender", "screen"):
             argv = pick.split()
         else:
-            ui.info_panel("MENU", ["Pilih 1–9, 0, b, p, s, f, k, c, atau Q — atau ketik perintah lengkap."], "red")
+            ui.info_panel("MENU", ["Pilih h, 1–9, 0, b, p, s, f, k, c, atau Q — atau ketik perintah "
+                                   "lengkap."], "red")
             continue
         try:
             main(argv)
@@ -946,9 +1174,9 @@ def cmd_ikon(cfg):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("mode", nargs="?", default=None,
-                   choices=["menu", "brief", "scan", "analyze", "score", "market", "backtest", "check",
-                            "decide", "pos", "cfg", "hist", "minggu", "week", "cekdata", "ikon", "peka",
-                            "profil", "kalender", "screen"])
+                   choices=["menu", "beranda", "brief", "scan", "analyze", "score", "market",
+                            "backtest", "check", "decide", "pos", "cfg", "hist", "minggu", "week",
+                            "cekdata", "ikon", "peka", "profil", "kalender", "screen"])
     p.add_argument("rest", nargs="*", help="ticker / arg tambahan (lihat docstring)")
     p.add_argument("--semua", action="store_true",
                    help="cekdata: seluruh watchlist bukan 4 sampel · backtest: portofolio gabungan "
@@ -996,6 +1224,8 @@ def main(argv=None):
         cmd_menu(cfg)
     elif m == "brief":
         cmd_brief(cfg, a.refresh, not a.no_export, a.top)
+    elif m == "beranda":
+        cmd_beranda(cfg, a.refresh, a.top or 5)
     elif m == "pos":
         act = a.rest[0] if a.rest else None
         tk = a.rest[1] if len(a.rest) > 1 else None

@@ -76,6 +76,7 @@ _ASCII = {                       # tanpa kurung siku: rich akan menafsirkannya s
 # kata kunci judul panel/header -> nama ikon
 _TITLE_ICON = [
     (("BRIEFING", "DECISION DESK"), "chart"),
+    (("BERANDA", "SEKARANG"), "target"),
     (("VALIDASI", "CEK ", "EVIDEN"), "shield"), (("STATUS",), "radar"),
     (("CARA BACA", "CARA PAKAI", "CATATAN", "JUJUR", "BATASAN", "LEGENDA"), "book"),
     (("KEPUTUSAN", "AKSI "), "scale"), (("RENCANA", "MINGGUAN", "KALENDER", "PERISTIWA"), "plan"),
@@ -305,6 +306,82 @@ def signal_markup(v):
     if v == -1:
         return f"[red]{dn} JUAL[/]"
     return "[grey62]— netral[/]"
+
+
+# ------------------------------------------------------ primitif layar keputusan
+# Gauge adalah ORNAMEN arah saja: tidak pernah membawa digit, angka aslinya selalu dicetak
+# pemanggil di sebelah gauge. Jadi tier ikon tidak bisa mengubah satu angka pun (uji §7
+# DESAIN-UI.md), dan IDX_ICONS=none cukup menghapus gauge tanpa menghilangkan isi.
+
+def _gauge():
+    """(isi, kosong, penanda, sumbu) untuk tier yang sedang aktif; None kalau tanpa gaya."""
+    if _icon_mode() == "none":
+        return None
+    if _icon_mode() == "ascii" or not HAS_RICH:
+        return ("#", "-", "o", ".")
+    return ("▓", "░", "●", "─")
+
+
+def kv(label, nilai, ket="", level=None, lw=None):
+    """Satu baris metrik `LABEL ··· nilai  keterangan`.
+
+    `lw` dipakai sekelompok baris supaya titik rapinya sejajar (sama seperti tabel RASIO);
+    `level` warna makna menurut §2 DESAIN-UI.md — default tebal netral.
+    """
+    lab = _strip(str(label)).upper()
+    lab = lab.ljust(lw) if lw else lab
+    if not HAS_RICH:
+        return f"{lab} ... {nilai}" + (f"  {_strip(ket)}" if ket else "")
+    out = f"[grey62]{lab}[/]··· [{level + ' bold' if level else 'bold'}]{nilai}[/]"
+    return out + (f" [grey62]{ket}[/]" if ket else "")
+
+
+def meter(frac, w=10, level="cyan"):
+    """Bar 0..1 untuk besaran yang punya jatah (breadth, pemakaian risiko). Kosong kalau
+    mode ikon `none` — isinya tetap terbaca dari angka yang dicetak pemanggil."""
+    g = _gauge()
+    if g is None or frac is None:
+        return ""
+    n = int(round(max(0.0, min(1.0, float(frac))) * w))
+    s = g[0] * n + g[1] * (w - n)
+    return s if not HAS_RICH else f"[{level}]{s}[/]"
+
+
+def scorebar(v, lo=-100.0, hi=100.0, w=12, level=None):
+    """Gauge skor berpusat nol: titik = posisi v, terisi dari nol ke arah v. Skala harus
+    disebut pemanggil di judul kolom, supaya gauge tidak meniru punya angka sendiri."""
+    g = _gauge()
+    if g is None or v is None:
+        return ""
+    try:
+        x, span = float(v), float(hi) - float(lo)
+    except (TypeError, ValueError):
+        return ""
+    if span <= 0:
+        return ""
+    pos = int(round(max(0.0, min(1.0, (x - lo) / span)) * (w - 1)))
+    nul = int(round(max(0.0, min(1.0, (0.0 - lo) / span)) * (w - 1)))
+    cells = [g[3]] * w
+    for i in range(min(pos, nul), max(pos, nul) + 1):
+        cells[i] = g[0]
+    cells[pos] = g[2]
+    s = "".join(cells)
+    if not HAS_RICH:
+        return s
+    return f"[{level or ('green' if x >= 0 else 'red')}]{s}[/]"
+
+
+def keymap(pairs, label="", sep="  ·  "):
+    """Cetak kaki layar: kunci + apa yang terjadi kalau dipakai, di SEMUA layar — pengguna tidak
+    perlu kembali ke menu untuk tahu ke mana berikutnya. `label` menjelaskan bahwa kuncinya
+    milik menu, karena layar ini bisa dijalankan langsung dari CLI."""
+    body = (sep.join(f"[{k}] {d}" for k, d in pairs) if not HAS_RICH
+            else sep.join(f"[bold cyan]{lit('[' + k + ']')}[/] {d}" for k, d in pairs))
+    s = (f"{label}: {body}" if label else body)
+    if HAS_RICH:
+        _c.print(f"[grey62]{s}[/]")
+    else:
+        print(s)
 
 
 def header(title, sub=""):
