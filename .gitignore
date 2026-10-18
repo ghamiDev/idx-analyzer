@@ -7,3 +7,8 @@ data/
 # Byte-code Python (dibuat ulang otomatis oleh interpreter)
 __pycache__/
 *.pyc
+
+# Hasil loop uji §7 (uji_ui.py) — artefak sementara, tiap run ditimpa
+.tmp-uji/
+tmp-uji/
+uji_ui.log

@@ -317,11 +317,10 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
                 "Menunggu bukan kesalahan; memaksa masuk di skor lemah yang salah.",
                 "· Cek ulang besok, atau turunkan ambang sementara dengan "
                 f"[bold]idx.py cfg set entry 15[/] untuk memperlebar pengamatan (risiko naik)."]
-    ui.info_panel("RENCANA AKSI HARI INI", plan + [
+    rencana = plan + [
         f"· Batas risiko total {cfg['max_total_risk_pct']}% modal; terpakai sekarang "
-        f"{budg['used_pct']:.2f}% — posisi baru hanya jika tidak menembus batas itu."], "green")
-
-    ui.info_panel("CARA BACA BRIEF INI", [
+        f"{budg['used_pct']:.2f}% — posisi baru hanya jika tidak menembus batas itu."]
+    baca = [
         "· Urutan panel = urutan kerja: kondisi pasar (boleh agresif?) → scanner (siapa yang layak?) → "
         "portofolio (apa yang sudah dipegang & mendekati stop?) → rencana aksi (berapa lot?).",
         "· Angka rupiah di rencana aksi adalah [bold]ukuran maksimal[/] menurut risiko 1% per posisi dan "
@@ -335,7 +334,8 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
         "· Panel STATUS DATA membandingkan bar harian dengan kutipan live (jeda ±1 menit). Kalau ada "
         "[bold]X Bahaya[/], jangan pakai angka halaman ini untuk order — jalankan `idx.py cekdata`.",
         "· Butuh jawaban dalam bentuk pertanyaan: [bold]idx.py minggu[/] — 'dengan modal ini, saham apa "
-        "yang layak ditahan 1 minggu, apa faktornya, ada berita apa'."], "cyan")
+        "yang layak ditahan 1 minggu, apa faktornya, ada berita apa'."]
+    ui.zone(("RENCANA AKSI HARI INI", rencana, "green"), ("CARA BACA BRIEF INI", baca, "cyan"))
 
     if export:
         path = export_report(cfg, res, ms, rows, budg, plan, today)
@@ -528,7 +528,7 @@ def cmd_beranda(cfg, refresh=False, top=5, scale=50.0):
             ev = kal.brief_events(kode, cfg, window=win)
         ui.info_panel(f"KALENDER {win} SESI KE DEPAN", ev, "yellow")
 
-    ui.info_panel("CARA BACA & BATASAN", [
+    batasan = [
         "· Urutan layar = urutan kerja: SEKARANG (lakukan ini) → MOTOR (kenapa skor digeser) → "
         "RADAR (siapa berikutnya) → KALENDER (tanggal yang bisa menendang stop) → batasan.",
         "· [bold]Tidak ada angka baru.[/] SEKARANG = baris yang sama dengan [bold]idx.py pos[/], "
@@ -549,15 +549,18 @@ def cmd_beranda(cfg, refresh=False, top=5, scale=50.0):
           "penyesuaian pasar tetap dihitung ulang. Paksa ulang: [bold]idx.py beranda --refresh[/]."]
          if dari_cache else
          [f"· Skor dihitung ulang barusan (walk-forward {len(uni)} saham) dan disimpan ke "
-          f"{store.HIST_FILE} — layar berikutnya hari ini membacanya dari cache."]), "magenta")
+          f"{store.HIST_FILE} — layar berikutnya hari ini membacanya dari cache."])
 
-    ui.info_panel("LANGKAH BERIKUT", [
+    langkah = [
         "· Ada yang harus dijalankan hari ini? Catat eksekusinya: "
         "[bold]idx.py pos cut <KODE> --lot N --harga X[/]",
         "· Mau angka satu sahamnya: [bold]idx.py check <KODE>[/] · jawaban 1 minggu: "
         "[bold]idx.py minggu[/]",
         "· Dashboard panjang (scanner penuh + rekap delta + laporan markdown): [bold]idx.py brief[/]",
-        "· Layar ini hanya membaca; tidak ada order yang dikirim."], "cyan")
+        "· Layar ini hanya membaca; tidak ada order yang dikirim.",
+    ]
+    # dua kolom saat layar lebar; di layar sempit menumpuk persis seperti dua panel biasa
+    ui.zone(("CARA BACA & BATASAN", batasan, "magenta"), ("LANGKAH BERIKUT", langkah, "cyan"))
     ui.keymap([("h", "beranda"), ("5", "check KODE"), ("1", "minggu"), ("6", "pos"),
                ("k", "kalender"), ("c", "screen"), ("4", "brief"), ("q", "keluar")], "menu")
 
@@ -1250,10 +1253,10 @@ def main(argv=None):
                            entry=cfg["entry"], ts_mult=cfg["ts_mult"], ms=_market(cfg, a.refresh),
                            rebal=cfg["rebal"], with_live=True, flat=cfg["flat"])
         eng.render_decision(d)
-        ui.info_panel(f"KONTEKS FUNDAMENTAL — {co.code_of(d['ticker'])}",
-                      co.peek(d["ticker"], cfg), "blue")
-        ui.info_panel(f"PERISTIWA TERDEKAT — {co.code_of(d['ticker'])}",
-                      kal.event_note(d["ticker"], cfg), "yellow")
+        ui.zone((f"KONTEKS FUNDAMENTAL — {co.code_of(d['ticker'])}",
+                 co.peek(d["ticker"], cfg), "blue"),
+                (f"PERISTIWA TERDEKAT — {co.code_of(d['ticker'])}",
+                 kal.event_note(d["ticker"], cfg), "yellow"))
     elif m == "scan":
         ms = _market(cfg, a.refresh)
         if ms:

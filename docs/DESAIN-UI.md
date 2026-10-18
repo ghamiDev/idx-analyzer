@@ -141,9 +141,21 @@ def scorebar(v, lo=-100.0, hi=100.0, w=12):
     """─▓▓▓▓●▓▓░░ untuk skor konfluensi; posisi titik = v. Teks angka tidak ikut digambar,
     supaya mode ikon tidak pernah mengubah digit."""
 
-def zone(title, lines, lebar_min=110, kiri=None, kanan=None):
-    """Dua kolom kalau ≥ lebar_min, satu kolom kalau tidak. Gagal muat = tumpuk, jangan
-    potong. Ini naiknya aturan yang sudah ada di ui.table() ke tingkat panel."""
+def zone(kiri, kanan, lebar_min=110):
+    """Dua panel sejajar saat terminal ≥ `lebar_min`, dua panel bertumpuk saat sempit.
+    `kiri`/`kanan` = (judul, baris, warna) seperti argumen `info_panel`.
+
+    Ditulis berbeda dari sketsa awal (`zone(title, lines, kiri, kanan)`) karena satu alasan:
+    tiap sisi harus menjaga judul DAN warnanya sendiri di kedua tata letak. Kalau sisinya
+    dilebur ke dalam satu panel berjudul tunggal, mode sempit kehilangan pembeda warna yang
+    dipakai mode lebar — dan P3 (warna = makna) jadi bergantung lebar terminal. Dengan tuple
+    per sisi, output layar sempit identik dengan output sebelum P2, jadi tata letak tidak
+    pernah mengubah makna. Gagal muat = menumpuk, jangan potong.
+
+    Dipakai di tiga tempat saja, semuanya pasangan lapis 3–4 dari P2 (bukti + cara baca), dan
+    tidak satu pun tabel dipotong ke dua kolom: tabel selalu selebar layar karena kolomnya yang
+    banyak tidak muat di setengah layar.
+    """
 
 def aksi_baris(badge, kode, sebab, angka_kanan):
     """Satu baris zona 'SEKARANG': badge (!) / ( ) + kode + SEBAB yang menyebut angka + P&L."""
@@ -158,17 +170,20 @@ berbeda di tiga mode.
 ## 7. Cara menguji setiap perubahan UI (obligatori)
 
 ```bash
-# 1. digit tidak boleh berubah oleh tier ikon
-for t in emoji symbol ascii none; do
-  IDX_ICONS=$t IDX_UI_WIDTH=100 python idx.py beranda | grep -v 'hari lalu' \
-    | grep -oE '[0-9][0-9.,]*' | md5sum; done        # harus 4 hash sama
-
-# 2. lebar tidak boleh menghilangkan isi
-for w in 40 60 80 100 118 140; do IDX_UI_WIDTH=$w python idx.py beranda | wc -l; done
-
-# 3. tanpa rich tetap terbaca
-python -c "import ui; ui.HAS_RICH=False" # lalu jalankan; fallback teks polos harus berisi
+python uji_ui.py            # semua layar yang memakai ui.zone; atau: python uji_ui.py beranda
 ```
+
+Saturi perintah di atas menjalankan tiga loop sekaligus untuk tiap layar: (1) empat tier ikon,
+(2) sapuan lebar 40–140 kolom — termasuk dua sisi ambang `ui.zone` (100 bertumpuk, 110/140
+sejajar), (3) fallback tanpa `rich`. Yang dibandingkan adalah **multiset digit** hasil
+`norm.digits()`, dan setiap selisih menampilkan digit mana yang hilang/lebih supaya drift data
+(sebenarnya bergeser antar menit) tidak tertukar dengan isi yang hilang karena tata letak.
+
+Pipeline `sed`/`md5sum` pernah dipakai untuk loop ini dan memberi hasil palsu: di 60 kolom
+`live 16:00 WIB 50 jam` terbelah menjadi dua baris, sehingga '50' lolos dari penyaring umur dan
+dua layar yang isinya sama dicatat BEDA. `norm.py` karena itu membuang garis kotak lebih dulu,
+menggabung baris, lalu menyaring — dan membaca FILE, bukan stdin (pipe git-bash datang sebagai
+CP1252 sementara output UTF-8).
 
 Kecuali tiga hal di atas hijau, perubahan UI dianggap belum selesai.
 
@@ -195,7 +210,7 @@ Kecuali tiga hal di atas hijau, perubahan UI dianggap belum selesai.
 |-------|-----|--------|--------------|
 | P0 | `kv()`, `meter()`, `scorebar()` di `ui.py`; panel STATUS header satu fungsi | rendah — murni render | kecil |
 | P1 | Layar `beranda` (mode baru, cache-only + satu `compute_scan`) + keymap di kaki | sedang — harus terbukti angka = `scan` pada saat sama | sedang |
-| P2 | Zone dua kolom pada `brief`/`check` saat ≥110 kolom | sedang — sentuh banyak render | sedang |
+| P2 | `ui.zone()` dua kolom saat ≥110 kolom: `brief` (RENCANA AKSI ‖ CARA BACA), `check` (FUNDAMENTAL ‖ PERISTIWA), `beranda` (BATASAN ‖ LANGKAH) | sudah dikerjakan 2026-10-18 — tiga loop §7 hijau lewat `uji_ui.py` | selesai |
 | P3 | Palet semantic (ganti gaya literal di pemanggil dengan token §2) | rendah-tapi-luas | kecil per file, banyak file |
 
 **Anti-goal (jangan dikerjakan):** grafik candlestick di terminal, spinner permanen,

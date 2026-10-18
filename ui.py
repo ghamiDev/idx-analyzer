@@ -9,9 +9,10 @@ import time
 try:
     from rich import box
     from rich.cells import cell_len
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.panel import Panel
     from rich.table import Table
+    from rich.text import Text
     HAS_RICH = True
     _c = Console(highlight=False)
     if not _c.is_terminal:
@@ -384,6 +385,33 @@ def keymap(pairs, label="", sep="  ·  "):
         print(s)
 
 
+def _panel(title, lines, border="cyan"):
+    """Satu-satunya tempat Panel berjudul dibangun, supaya `info_panel` dan `zone` tidak bisa
+    punya gaya judul/warna yang berbeda untuk panel yang sama."""
+    return Panel("\n".join(lines), title=f"[bold]{decorated_title(title)}[/]",
+                 border_style=border, box=box.ROUNDED, padding=(0, 1))
+
+
+def zone(kiri, kanan, lebar_min=110):
+    """Dua panel sejajar saat terminal ≥ `lebar_min` kolom, dua panel bertumpuk saat sempit.
+
+    `kiri`/`kanan` = (judul, baris, warna) seperti argumen info_panel. Sempit, rich tidak
+    tersedia, atau salah satu sisi kosong → menumpuk persis seperti sebelumnya; tidak ada baris
+    yang hilang atau terpotong hanya karena layar kecil. Tiap sisi menjaga judul dan warnanya
+    sendiri di kedua tata letak, jadi vonis warna tidak berubah ikut tata letak.
+    """
+    if not HAS_RICH or avail() < lebar_min or not (kiri and kiri[1]) or not (kanan and kanan[1]):
+        for side in (kiri, kanan):
+            if side and side[1]:
+                info_panel(*side)
+        return
+    g = Table.grid(padding=(0, 1), expand=True)
+    for _ in (0, 1):
+        g.add_column(ratio=1, no_wrap=False, overflow="fold")
+    g.add_row(_panel(*kiri), _panel(*kanan))
+    _c.print(g)
+
+
 def header(title, sub=""):
     if HAS_RICH:
         t = decorated_title(title)
@@ -550,6 +578,9 @@ def table(headers, rows, caption=None, first_w=None):
     need = sum(max([_cw(hc[i])] + [_cw(c[i]) for c in clean]) if clean else _cw(hc[i])
                for i in range(len(hc))) + 4 * len(hc)
     if W < need:                      # terminal sempit: daftar vertikal, bukan kolom patah
+        if caption:                   # caption ikut dicetak di SEMUA cabang sempit — di dalamnya
+            print(f"— {_strip(caption)}")   # ada aturan angka (2.5×ATR, +0, ≥5 hari) yang tidak
+                                            # boleh hilang hanya karena rich tidak terpasang
         for c in clean:
             print(f"{ic('list')} {c[0]}" if icon_mode() != "none" else f"> {c[0]}")
             for i in range(1, len(hc)):
@@ -568,12 +599,10 @@ def table(headers, rows, caption=None, first_w=None):
 
 
 def info_panel(title, lines, border="cyan"):
-    t = decorated_title(title)
     if HAS_RICH:
-        _c.print(Panel("\n".join(lines), title=f"[bold]{t}[/]", border_style=border,
-                       box=box.ROUNDED, padding=(0, 1)))
+        _c.print(_panel(title, lines, border))
     else:
-        s = _strip(t)
+        s = _strip(decorated_title(title))
         print(f"\n── {s} " + "─" * max(0, min(avail(), 50) - _cw(s) - 4))
         for l in lines:
             print(_strip(l))
