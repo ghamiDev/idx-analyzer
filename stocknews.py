@@ -57,11 +57,23 @@ def _score(title):
 def headlines(code, days=14, limit=8, force=False):
     """Ambil headline terbaru untuk satu kode saham. Return list dict: title/source/date/link/bias/tags."""
     code = code.upper().replace(".JK", "")
-    key = (code, days)
-    if not force and key in _CACHE:
-        return _CACHE[key]
     since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
-    q = f'"{code}" saham OR "emiten {code}" after:{since}'
+    return search(f'"{code}" saham OR "emiten {code}" after:{since}', days, limit, force)
+
+
+def by_query(query, days=90, limit=6, force=False):
+    """Headline untuk kueri Google News bebas — dipakai `company.py` untuk tema
+    (proyek, aksi korporasi, kepemilikan) yang tidak selalu menyebut kata 'saham'."""
+    return search(query, days, limit, force)
+
+
+def search(q, days, limit, force=False):
+    """Mesin pengambil + penyekor satu kueri RSS. Cache keyed on (q, days)."""
+    key = (q, days)
+    if force:
+        _CACHE.pop(key, None)
+    if key in _CACHE:
+        return _CACHE[key]
     url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(q)
            + "&hl=id&gl=ID&ceid=ID:id")
     out = []

@@ -593,7 +593,7 @@ def trade_stats(pos, c):
     return {"n": len(done), "win": wins / len(done),
             "median_hold": float(np.median(holds)), "avg_hold": float(np.mean(holds))}
 
-def snapshot(ticker, rebal=63, horizon=None, with_live=False):
+def snapshot(ticker, rebal=63, horizon=None, with_live=False, entry=20.0, flat=0.0, ts_mult=2.5):
     """SATU sumber angka untuk semua mode: skor walk-forward, bobot, rezim, ATR, status posisi.
 
     Dipakai compute_scan (scanner), decide (keputusan), portfolio (pemantauan) dan cmd_analyze,
@@ -602,6 +602,9 @@ def snapshot(ticker, rebal=63, horizon=None, with_live=False):
     `with_live=True` hanya mengubah [harga yang dipakai untuk ukuran posisi] (`close`), TIDAK
     mengubah bar yang dipakai menghitung skor — jadi angka SKOR di scanner, `check`, `pos`, dan
     `minggu` selalu sama. Kutipan yang lebih baru dari bar harian dilaporkan lewat `live_ahead`.
+    `entry`/`flat`/`ts_mult` dipakai [simulasi posisi & statistik historik] saja — skor tidak
+    berubah oleh ketiganya, jadi pemanggil wajib meneruskan nilai config agar aturan keluar yang
+    tampil di layar sama dengan yang dihitung `pos`/`brief`/`backtest`.
     """
     H = horizon or HORIZON
     df = load(ticker)
@@ -623,7 +626,7 @@ def snapshot(ticker, rebal=63, horizon=None, with_live=False):
     c = df.Close.loc[sim.index]
     g_ser = index_gate().reindex(c.index, method="ffill").fillna(False)
     atrn = (atr(df) / df.Close).loc[sim.index]
-    pos = simulate_positions(sim, c, atrn, g_ser.to_numpy())
+    pos = simulate_positions(sim, c, atrn, g_ser.to_numpy(), entry, flat, ts_mult)
     bar_close = float(df.Close.iloc[-1])
     pxl = live_px if live_px is not None else bar_close
     a = float(atr(df).iloc[-1])
@@ -1141,9 +1144,9 @@ def track_record(sim, c, gate_series=None, horizon=5, thresh=20.0):
             "edge_pp": (float((f > 0).mean()) - float((fwd.dropna() > 0).mean())) * 100 if len(f) else np.nan}
 
 def decide(ticker, capital=100_000_000, risk_pct=1.0, ms=None, entry=20.0, ts_mult=2.5, rebal=63,
-           horizon=None, max_pos_pct=0.20, with_live=False):
+           horizon=None, max_pos_pct=0.20, with_live=False, flat=0.0):
     """Angka keputusan satu saham dalam dict — sumber skornya `snapshot()`, sama seperti scanner."""
-    s = snapshot(ticker, rebal, horizon, with_live=with_live)
+    s = snapshot(ticker, rebal, horizon, with_live=with_live, entry=entry, flat=flat, ts_mult=ts_mult)
     pxl, a, st, gate_now = s["close"], s["atr"], s["stats"], s["gate"]
     if ms is None and market_state:
         ms = market_state.get_market_state(UNIVERSE)
@@ -1164,6 +1167,7 @@ def decide(ticker, capital=100_000_000, risk_pct=1.0, ms=None, entry=20.0, ts_mu
     d = dict(s)
     d.update({"mood": ms["mood"] if ms else "n/a", "act": act, "why": why, "adj": adj, "final": final,
               "sector_adj": sp, "mkt_adj": mkt_adj, "qty_full": qty_full, "entry": entry,
+              "flat": flat, "ts_mult": ts_mult,
               "bullish": final >= 5, "risk_per_share": R, "stop": pxl - R, "zone_lo": pxl - a,
               "t1": pxl + 1.5 * R, "t2": pxl + 3 * R, "qty": qty, "max_pos_pct": max_pos_pct,
               "capped_20pct": qty == max_qty and qty > 0, "capital": capital, "risk_pct": risk_pct,
@@ -1198,6 +1202,7 @@ def render_decision(d, compact=False):
     ticker, pxl, a = d["ticker"], d["close"], d["atr"]
     R, stop, t1, t2 = d["risk_per_share"], d["stop"], d["t1"], d["t2"]
     st, final, act, why = d["stats"], d["final"], d["act"], d["why"]
+    entry, flat, tsm = d.get("entry", 20.0), d.get("flat", 0.0), d.get("ts_mult", 2.5)
     ds = data_status_lines(d)
     if ds:
         ui.info_panel("VALIDASI DATA", ds, "red" if any("X Bahaya" in x for x in ds) else "cyan")
@@ -1227,22 +1232,28 @@ def render_decision(d, compact=False):
     if d["bullish"]:
         plan = [
             f"Zona entry ideal : [green]{pxl - a:,.0f} – {pxl:,.0f}[/]  (pullback 1 ATR s/d harga kini)",
-            f"Stop awal        : [red]{stop:,.0f}[/]  (2,5×ATR, risiko per lembar ≈ {R:,.0f})",
+            f"Stop awal        : [red]{stop:,.0f}[/]  ({tsm}×ATR, risiko per lembar ≈ {R:,.0f})",
             f"Target 1 (+1.5R) : [bold]{t1:,.0f}[/] → ambil 50% profit, geser stop ke harga modal",
-            f"Target 2 (+3R)   : [bold]{t2:,.0f}[/] → sisanya biarkan lari dengan trailing stop 2,5×ATR dari puncak",
+            f"Target 2 (+3R)   : [bold]{t2:,.0f}[/] → sisanya biarkan lari dengan trailing stop "
+            f"{tsm}×ATR dari puncak",
         ]
         if st["n"]:
             plan.append(f"Durasi realistis : ~[bold]{st['median_hold']:.0f}[/] hari bursa (median historik); "
-                        "keluar lebih awal jika skor walk-forward jatuh di bawah 0.")
+                        f"keluar lebih awal jika skor akhir jatuh ≤ [red]{flat:+.0f}[/].")
         ui.info_panel("RENCANA TRANSAKSI (acuan jika Anda memutuskan masuk)", plan, "green")
     else:
+        sudah = final <= flat
         ui.info_panel("RENCANA (posisi baru ditolak — ini aturan keluar)", [
             "[bold]Sistem tidak membuka posisi baru di skor ini.[/]",
-            f"Jika masih memegang: [red]KURANGI/JUAL[/] bertahap; bila bertahan, patuhi "
-            f"trailing stop [red]{stop:,.0f}[/] (2,5×ATR dari harga kini) dan [bold]keluar total[/] "
-            "saat skor akhir jatuh di bawah −20.",
-            "Ubah keputusan jadi BELI hanya jika: skor akhir naik ke ≥ +20 [bold]dan[/] IHSG kembali di "
-            "atas EMA200 (gate terbuka).",
+            f"Aturan keluar yang berlaku: skor akhir ≤ [red]{flat:+.0f}[/] "
+            + (f"([bold]SUDAH TERPENUHI[/] — skor kini {final:+.1f}); "
+               if sudah else f"(belum tersentuh — skor kini {final:+.1f}); ")
+            + f"trailing stop [red]{stop:,.0f}[/] ({tsm}×ATR dari harga kini) — "
+            "di `pos`/`brief` baris ini memakai angka yang sama.",
+            f"Jika masih memegang: [red]KURANGI/JUAL[/] bertahap dan patuhi stop; menunda tidak "
+            "mengubah verdik.",
+            f"Ubah keputusan jadi BELI hanya jika: skor akhir naik ke ≥ [green]{entry:+.0f}[/] [bold]dan[/] "
+            "IHSG kembali di atas EMA200 (gate terbuka).",
         ], "red")
 
     cap, rp = d["capital"], d["risk_pct"]
@@ -1265,17 +1276,17 @@ def render_decision(d, compact=False):
         sz.append("[yellow]1/3 dari jatah normal kurang dari 1 lot[/] — artinya sistem bilang jangan masuk.")
     ui.info_panel("UKURAN POSISI", sz, "magenta")
     if not compact:
-        _decision_legend(d.get("entry", 20.0))
+        _decision_legend(entry, flat, tsm)
 
-def _decision_legend(entry=20.0):
+def _decision_legend(entry=20.0, flat=0.0, ts_mult=2.5):
     ui.info_panel("CARA BACA & ATURAN MAIN", [
         f"· [bold]Keputusan[/] datang dari SKOR AKHIR, bukan dari satu indikator. Ambang yang berlaku: "
         f"≥ +35 BELI KUAT, ≥ {entry:+.0f} BELI (hanya jika gate terbuka), +5…{entry:+.0f} WATCHLIST, "
-        "−5…+5 HOLD/TUNGGU, sisanya kurangi/jual.",
+        f"−5…+5 HOLD/TUNGGU, ≤ {flat:+.0f} keluar.",
         "· [bold]Gate indeks tertutup[/] = secara historis IHSG di bawah EMA200; di rezim itu breakout lebih "
         "sering gagal, jadi skor kuat sekalipun hanya boleh jadi posisi kecil ([yellow]SIAGA[/]).",
-        "· [bold]Median hold[/] adalah perkiraan waktu, bukan janji — keluar lebih awal bila skor jatuh ≤ 0 "
-        "atau trailing stop 2,5×ATR tersentuh. Jangan menahan posisi yang sudah kena stop.",
+        f"· [bold]Median hold[/] adalah perkiraan waktu, bukan janji — keluar lebih awal bila skor jatuh ≤ "
+        f"{flat:+.0f} atau trailing stop {ts_mult}×ATR tersentuh. Jangan menahan posisi yang sudah kena stop.",
         "· [bold]keyakinan metode searah[/] rendah (<40%) berarti skor digerakkan sedikit metode; perlakukan "
         "sebagai sinyal lemah. Sistem ini pengendali risiko, bukan mesin prediksi — modal terbesar Anda tetap "
         "stop loss."], "cyan")

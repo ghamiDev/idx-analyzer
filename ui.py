@@ -78,7 +78,7 @@ _TITLE_ICON = [
     (("BRIEFING", "DECISION DESK"), "chart"),
     (("VALIDASI", "CEK ", "EVIDEN"), "shield"), (("STATUS",), "radar"),
     (("CARA BACA", "CARA PAKAI", "CATATAN", "JUJUR", "BATASAN", "LEGENDA"), "book"),
-    (("KEPUTUSAN", "AKSI "), "scale"), (("RENCANA", "MINGGUAN"), "plan"),
+    (("KEPUTUSAN", "AKSI "), "scale"), (("RENCANA", "MINGGUAN", "KALENDER", "PERISTIWA"), "plan"),
     (("UKURAN POSISI", "REKAP", "PORTOFOLIO", "LAPORAN", "KEYAKINAN", "DICATAT", "TRANSAKSI",
       "SKOR HARI INI"), "coin"),
     (("ANGGARAN RISIKO", "RISIKO"), "risk"), (("BERITA", "PEMBERITAHUAN"), "news"),

@@ -49,7 +49,7 @@ def add(ticker, lots=None, price=None, note="", cfg=None, d=None):
     t = normalize(ticker)
     if d is None:
         d = eng.decide(t, cfg["capital"], cfg["risk_pct"], entry=cfg["entry"],
-                       ts_mult=cfg["ts_mult"], rebal=cfg.get("rebal", 63))
+                       ts_mult=cfg["ts_mult"], rebal=cfg.get("rebal", 63), flat=cfg.get("flat", 0.0))
     px = float(price or d["close"])
     qty = (lots * LOT) if lots else d["qty"]
     if qty < LOT:
@@ -96,7 +96,7 @@ def status(ticker, pos, cfg, d=None, ms=None):
     """Kondisi posisi: P&L, jarak stop/target, apakah aturan keluar sudah memicu."""
     t = normalize(ticker)
     d = d or eng.decide(t, cfg["capital"], cfg["risk_pct"], entry=cfg["entry"], ts_mult=cfg["ts_mult"],
-                         ms=ms, rebal=cfg.get("rebal", 63), with_live=True)
+                         ms=ms, rebal=cfg.get("rebal", 63), with_live=True, flat=cfg.get("flat", 0.0))
     df = d["df"]  # muat sekali: decide() sudah bawa DataFrame dari snapshot
     px = float(df.Close.iloc[-1])
     daily_px, live_px = px, None
@@ -139,7 +139,7 @@ def status(ticker, pos, cfg, d=None, ms=None):
     out["action"] = ("KELUAR" if out["exit_now"] else "KURANGI" if d["final"] <= -15
                      else "PEGANG / TAMBAH" if d["final"] >= cfg["entry"] else "PEGANG")
     if px >= pos["t2"]:
-        out["note_out"] = "Target 2 tercapai — trailing 2,5×ATR satu-satunya rem."
+        out["note_out"] = f"Target 2 tercapai — trailing {cfg['ts_mult']}×ATR satu-satunya rem."
     elif px >= pos["t1"] and pos.get("t1_done"):
         out["note_out"] = "Target 1 sudah diambil."
     elif px >= pos["t1"]:

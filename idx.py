@@ -8,9 +8,15 @@
   python idx.py backtest <TICKER>     # aturan yang sama atas sejarah: transaksi per posisi + biaya dua sisi
   python idx.py backtest --semua      # portofolio gabungan: satu modal bersama, rebutan slot, cap likuiditas
   python idx.py peka <TICKER>         # grid ambang skor × trailing stop × jarak kalibrasi + vonis overfit
+  python idx.py profil <TICKER>       # fundamental & konteks: laporan keuangan, rasio, dividen,
+                                      # aksi korporasi, kepemilikan, berita bertema proyek/rencana
+                                      # (tidak mengubah skor teknis — cache 12 jam, --refresh untuk ulang)
   python idx.py pos                   # status posisi terbuka: P&L, stop, skor, sisa risiko
   python idx.py pos add <T> [--lot N] [--harga X] [--cat "..."]
   python idx.py pos cut <T> [--lot N] [--harga X]
+  python idx.py kalender [<T> ...]    # jadwal rilis laporan & tanggal ex-dividen sebatas watchlist —
+                                      # tanggal inilah yang sering menendang stop tanpa peringatan;
+                                      # kolom POSISI menandai emiten yang Anda pegang (--semua, --hari N)
   python idx.py cfg [show|set K V]    # watchlist, modal, risiko, ambang
   python idx.py hist [<T>] [--days N] # riwayat skor, delta, transaksi & rekap P&L realisasi
   python idx.py cekdata [<T> ...]     # dari mana angka datang: sumber hidup/matinya, umur data,
@@ -42,6 +48,8 @@ import portfolio as pf
 import stocknews
 import store
 import ui
+import company as co
+import kalender as kal
 
 
 def _universe(cfg):
@@ -67,7 +75,7 @@ def cmd_pos(cfg, action=None, ticker=None, lots=None, price=None, cat=""):
     if action == "add":
         with ui.wait(f"memuat data + walk-forward {pf.normalize(ticker).upper()}…"):
             d = eng.decide(pf.normalize(ticker), cfg["capital"], cfg["risk_pct"], entry=cfg["entry"],
-                           ts_mult=cfg["ts_mult"], ms=_market(cfg), rebal=cfg["rebal"])
+                           ts_mult=cfg["ts_mult"], ms=_market(cfg), rebal=cfg["rebal"], flat=cfg["flat"])
         pos, qty, R = pf.add(ticker, lots, price, cat, cfg, d)
         ui.header(f"POSISI DITAMBAH — {pf.normalize(ticker)}",
                   f"{pos['lots']} lot @ {pos['avg']:,.0f} · tercatat {dt.date.today()}")
@@ -238,6 +246,9 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
         rows = [r for r in rows if r]
         budg = pf.budget(rows, cfg)
         render_positions(rows, budg, cfg)
+        ev = kal.brief_events([r["ticker"] for r in rows], cfg)
+        if ev:
+            ui.info_panel("JADWAL YANG MENYERET POSISI INI", ev, "yellow")
 
     cands = [r for r in res if r["final"] >= cfg["entry"]]
     plan = []
@@ -247,7 +258,8 @@ def cmd_brief(cfg, refresh=False, export=True, top=None):
         for r in cands[:5]:
             try:
                 d = eng.decide(r["ticker"], cfg["capital"], cfg["risk_pct"], entry=cfg["entry"],
-                               ts_mult=cfg["ts_mult"], ms=ms, rebal=cfg["rebal"], with_live=True)
+                               ts_mult=cfg["ts_mult"], ms=ms, rebal=cfg["rebal"], with_live=True,
+                               flat=cfg["flat"])
             except Exception as e:  # noqa: BLE001
                 plan.append(f"· {r['ticker']}: gagal hitung ({e})")
                 continue
@@ -399,7 +411,7 @@ def cmd_minggu(cfg, ticker=None, top=8, refresh=False, kartu=False):
     def rencana(k):
         with ui.wait(f"menghitung ulang {k['ticker']} untuk horison {H} hari + validasi datanya…"):
             d = eng.decide(k["ticker"], cfg["capital"], cfg["week_risk_pct"], ms=ms, entry=cfg["entry"],
-                           ts_mult=cfg["ts_mult"], rebal=cfg["rebal"], horizon=H,
+                           ts_mult=cfg["ts_mult"], rebal=cfg["rebal"], horizon=H, flat=cfg["flat"],
                            max_pos_pct=cfg["week_max_pos_pct"], with_live=True)
         with ui.wait(f"mengambil berita {k['ticker']} (Google News RSS)…"):
             news = stocknews.headlines(d["ticker"], days=cfg["week_news_days"], limit=7, force=refresh)
@@ -409,6 +421,8 @@ def cmd_minggu(cfg, ticker=None, top=8, refresh=False, kartu=False):
         # satu saham: tidak disaring dulu — apa adanya, termasuk kalau verdiknya JUAL
         d, news, ns = rencana(rows[0])
         render_kartu(d, rows[0], ns, news, cfg, H)
+        ui.info_panel(f"KONTEKS FUNDAMENTAL — {co.code_of(d['ticker'])}",
+                      co.peek(d["ticker"], cfg), "blue")
         return d
 
     ranked = pick_weekly(rows, cfg)
@@ -678,8 +692,8 @@ def render_minggu(d, best, ranked, ns, news, cfg, H):
         "broker efektif — jadi lebih besar lagi.",
         "· Bar harian dari sumber publik (Yahoo) bisa tertinggal/revisi; panel VALIDASI DATA di atas "
         "membandingkannya dengan kutipan live berjeda ±1 menit. Volume IHSG memang tidak tersedia, dan "
-        "berita adalah kata kunci — bila ada rilis laporan keuangan atau aksi korporasi minggu ini, "
-        "itu di luar model.",
+        "berita adalah kata kunci — [bold]jadwal rilis laporan & tanggal ex-dividen minggu ini dicek "
+        "terpisah lewat `idx.py kalender`[/]; skor tetap hanya membaca bar harian.",
     ], "cyan")
 
 
@@ -701,6 +715,10 @@ MENU = [
     ("p", "backtest --semua — portofolio: satu modal bersama, rebutan slot & cap likuiditas",
      ["backtest", "--semua"]),
     ("s", "peka <KODE> — grid ambang × trailing stop × kalibrasi + vonis overfit", ["peka", "{T}"]),
+    ("f", "profil <KODE> — fundamental: keuangan, rasio, dividen, aksi korporasi, kepemilikan, proyek",
+     ["profil", "{T}"]),
+    ("k", "kalender — jadwal rilis laporan & tanggal ex-dividen sebatas watchlist (+ posisi yang dipegang)",
+     ["kalender"]),
 ]
 
 
@@ -762,10 +780,10 @@ def cmd_menu(cfg):
             argv = _fill(dict((k, a) for k, _, a in MENU)[pick], cfg)
         elif pick.split()[0] in ("minggu", "week", "brief", "check", "decide", "pos", "cfg", "hist",
                                  "scan", "analyze", "score", "market", "backtest", "cekdata", "ikon",
-                                 "peka"):
+                                 "peka", "profil", "kalender"):
             argv = pick.split()
         else:
-            ui.info_panel("MENU", ["Pilih 1–9, 0, b, p, s, atau Q — atau ketik perintah lengkap."], "red")
+            ui.info_panel("MENU", ["Pilih 1–9, 0, b, p, s, f, k, atau Q — atau ketik perintah lengkap."], "red")
             continue
         try:
             main(argv)
@@ -917,7 +935,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("mode", nargs="?", default=None,
                    choices=["menu", "brief", "scan", "analyze", "score", "market", "backtest", "check",
-                            "decide", "pos", "cfg", "hist", "minggu", "week", "cekdata", "ikon", "peka"])
+                            "decide", "pos", "cfg", "hist", "minggu", "week", "cekdata", "ikon", "peka",
+                            "profil", "kalender"])
     p.add_argument("rest", nargs="*", help="ticker / arg tambahan (lihat docstring)")
     p.add_argument("--semua", action="store_true",
                    help="cekdata: seluruh watchlist bukan 4 sampel · backtest: portofolio gabungan "
@@ -928,7 +947,8 @@ def main(argv=None):
     p.add_argument("--lot", type=int)
     p.add_argument("--harga", type=float)
     p.add_argument("--cat", default="")
-    p.add_argument("--days", type=int, default=20)
+    p.add_argument("--days", type=int, help="hist: berapa hari riwayat (default 20) · kalender: "
+                                           "jendela hari bursa ke depan (default config kal_days)")
     p.add_argument("--refresh", action="store_true", help="paksa hitung ulang (abaikan cache skor & berita)")
     p.add_argument("--no-export", action="store_true", help="jangan tulis laporan/riwayat")
     p.add_argument("--entry", type=float)
@@ -972,7 +992,7 @@ def main(argv=None):
     elif m == "cfg":
         cmd_cfg(cfg, a.rest)
     elif m == "hist":
-        cmd_hist(cfg, a.rest[0] if a.rest else None, a.days)
+        cmd_hist(cfg, a.rest[0] if a.rest else None, a.days or 20)
     elif m == "ikon":
         cmd_ikon(cfg)
     elif m == "cekdata":
@@ -983,8 +1003,12 @@ def main(argv=None):
         with ui.wait(f"memuat data + walk-forward {pf.normalize(a.rest[0]).upper()}…"):
             d = eng.decide(pf.normalize(a.rest[0]), cfg["capital"], cfg["risk_pct"],
                            entry=cfg["entry"], ts_mult=cfg["ts_mult"], ms=_market(cfg, a.refresh),
-                           rebal=cfg["rebal"], with_live=True)
+                           rebal=cfg["rebal"], with_live=True, flat=cfg["flat"])
         eng.render_decision(d)
+        ui.info_panel(f"KONTEKS FUNDAMENTAL — {co.code_of(d['ticker'])}",
+                      co.peek(d["ticker"], cfg), "blue")
+        ui.info_panel(f"PERISTIWA TERDEKAT — {co.code_of(d['ticker'])}",
+                      kal.event_note(d["ticker"], cfg), "yellow")
     elif m == "scan":
         ms = _market(cfg, a.refresh)
         if ms:
@@ -1019,6 +1043,14 @@ def main(argv=None):
         sym = pf.normalize(a.rest[0]) if a.rest else "^JKSE"
         ui.stage(f"menguji kepekaan {sym} (grid ambang × stop × kalibrasi)…")
         eng.cmd_peka(sym, cfg)
+    elif m == "profil":
+        if not a.rest:
+            raise SystemExit("Pakai: idx.py profil <TICKER>  (contoh: idx.py profil BBCA)")
+        co.cmd_profil(a.rest[0], cfg, force=a.refresh)
+        ui.info_panel(f"PERISTIWA TERDEKAT — {co.code_of(a.rest[0])}",
+                      kal.event_note(a.rest[0], cfg), "yellow")
+    elif m == "kalender":
+        kal.cmd_kalender(cfg, a.rest or None, a.semua, a.days, a.refresh)
     elif m in ("score", "analyze"):
         sym = pf.normalize(a.rest[0]) if a.rest else "^JKSE"
         ui.stage({"score": f"menghitung skor walk-forward {sym}…",
