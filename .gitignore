@@ -1,2 +1,9 @@
 # Cache kondisi pasar (TTL 30 menit, dibuat ulang otomatis) — bukan sumber yang layak di-version
 .market_state_cache.json
+
+# Isi portofolio & riwayat transaksi Anda + cache profil — sensitif, jangan sampai ikut ke remote
+data/
+
+# Byte-code Python (dibuat ulang otomatis oleh interpreter)
+__pycache__/
+*.pyc
