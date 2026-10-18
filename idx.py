@@ -16,7 +16,13 @@
   python idx.py pos cut <T> [--lot N] [--harga X]
   python idx.py kalender [<T> ...]    # jadwal rilis laporan & tanggal ex-dividen sebatas watchlist —
                                       # tanggal inilah yang sering menendang stop tanpa peringatan;
-                                      # kolom POSISI menandai emiten yang Anda pegang (--semua, --hari N)
+                                      # kolom POSISI menandai emiten yang Anda pegang (--semua, --days N)
+  python idx.py screen [K=V ...]      # saringan multi-kriteria: PER/PBV/ROE/dividen/utang/kapitalisasi/
+                                      # likuiditas/harga 1 lot (+ skor `scan` bila dihitung).
+                                      # preset=value|deviden|tumbuh|sehat|terjangkau · batas sendiri:
+                                      # per_maks=12 roe_min=15 likuid_min=5 · urut=roe · --tanpa-skor
+                                      # K=V sebagai argumen, jadi: idx.py screen preset=value per_maks=10
+                                      # (kolom SKOR = angka yang sama dengan `scan`, satu fungsi)
   python idx.py cfg [show|set K V]    # watchlist, modal, risiko, ambang
   python idx.py hist [<T>] [--days N] # riwayat skor, delta, transaksi & rekap P&L realisasi
   python idx.py cekdata [<T> ...]     # dari mana angka datang: sumber hidup/matinya, umur data,
@@ -50,6 +56,7 @@ import store
 import ui
 import company as co
 import kalender as kal
+import screen as scr
 
 
 def _universe(cfg):
@@ -719,11 +726,13 @@ MENU = [
      ["profil", "{T}"]),
     ("k", "kalender — jadwal rilis laporan & tanggal ex-dividen sebatas watchlist (+ posisi yang dipegang)",
      ["kalender"]),
+    ("c", "screen — saring universe: PER/PBV/ROE/dividen/likuiditas/harga 1 lot (+ skor dari sumber `scan`)",
+     ["screen", "preset={S}"]),
 ]
 
 
 def _fill(argv, cfg):
-    """Ganti placeholder menu ({T}/{M}/{N}) dengan jawaban user."""
+    """Ganti placeholder menu ({T}/{M}/{N}/{S}) dengan jawaban user."""
     out = []
     for tok in argv:
         if tok == "{T}":
@@ -732,6 +741,9 @@ def _fill(argv, cfg):
             out.append(_ask("modal rupiah", str(int(cfg["capital"]))).replace(".", "").replace(",", ""))
         elif tok == "{N}":
             out.append(_ask("jumlah baris ranking", "8"))
+        elif "{S}" in tok:
+            out.append(tok.replace("{S}", _ask(
+                "preset saringan (value/deviden/tumbuh/sehat/terjangkau)", "value")))
         else:
             out.append(tok)
     return out
@@ -780,10 +792,10 @@ def cmd_menu(cfg):
             argv = _fill(dict((k, a) for k, _, a in MENU)[pick], cfg)
         elif pick.split()[0] in ("minggu", "week", "brief", "check", "decide", "pos", "cfg", "hist",
                                  "scan", "analyze", "score", "market", "backtest", "cekdata", "ikon",
-                                 "peka", "profil", "kalender"):
+                                 "peka", "profil", "kalender", "screen"):
             argv = pick.split()
         else:
-            ui.info_panel("MENU", ["Pilih 1–9, 0, b, p, s, f, k, atau Q — atau ketik perintah lengkap."], "red")
+            ui.info_panel("MENU", ["Pilih 1–9, 0, b, p, s, f, k, c, atau Q — atau ketik perintah lengkap."], "red")
             continue
         try:
             main(argv)
@@ -936,7 +948,7 @@ def main(argv=None):
     p.add_argument("mode", nargs="?", default=None,
                    choices=["menu", "brief", "scan", "analyze", "score", "market", "backtest", "check",
                             "decide", "pos", "cfg", "hist", "minggu", "week", "cekdata", "ikon", "peka",
-                            "profil", "kalender"])
+                            "profil", "kalender", "screen"])
     p.add_argument("rest", nargs="*", help="ticker / arg tambahan (lihat docstring)")
     p.add_argument("--semua", action="store_true",
                    help="cekdata: seluruh watchlist bukan 4 sampel · backtest: portofolio gabungan "
@@ -958,6 +970,9 @@ def main(argv=None):
     p.add_argument("--slip", type=float, help="override slippage %% per sisi untuk sesi ini")
     p.add_argument("--kartu", action="store_true", help="tampilan kartu: berita → analisa → pendukung → keputusan")
     p.add_argument("--nogate", action="store_true")
+    p.add_argument("--tanpa-skor", action="store_true",
+                   help="screen: saringan fundamental saja, tanpa menghitung skor walk-forward "
+                        "40 saham (lebih cepat, kolom SKOR/VERDIK jadi —)")
     a = p.parse_args(argv)
 
     cfg = store.load_config()
@@ -1051,6 +1066,8 @@ def main(argv=None):
                       kal.event_note(a.rest[0], cfg), "yellow")
     elif m == "kalender":
         kal.cmd_kalender(cfg, a.rest or None, a.semua, a.days, a.refresh)
+    elif m == "screen":
+        scr.cmd_screen(cfg, a.rest, force=a.refresh, with_score=not a.tanpa_skor)
     elif m in ("score", "analyze"):
         sym = pf.normalize(a.rest[0]) if a.rest else "^JKSE"
         ui.stage({"score": f"menghitung skor walk-forward {sym}…",

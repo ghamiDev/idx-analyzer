@@ -13,5 +13,16 @@
   "week_horizon": 5,
   "week_risk_pct": 5.0,
   "week_max_pos_pct": 0.9,
-  "week_news_days": 14
+  "week_news_days": 14,
+  "fee_buy_pct": 0.15,
+  "fee_sell_pct": 0.25,
+  "slip_pct": 0.05,
+  "max_pos_pct": 20.0,
+  "max_volume_pct": 1.0,
+  "profile_ttl_hours": 12.0,
+  "profile_news_days": 180,
+  "profile_news_limit": 4,
+  "kal_ttl_hours": 24.0,
+  "kal_days": 30,
+  "screen_ttl_hours": 24.0
 }

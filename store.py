@@ -39,6 +39,8 @@ DEFAULTS = {
     # --- kalender peristiwa (kalender.py) ---
     "kal_ttl_hours": 24.0,        # umur cache data/kalender.json per emiten
     "kal_days": 30,               # jendela hari bursa ke depan (dan ke belakang) yang ditampilkan
+    # --- saringan saham (screen.py) ---
+    "screen_ttl_hours": 24.0,     # umur cache data/screen.json per emiten (metrik .info)
 }
 
 
@@ -62,7 +64,7 @@ _CAST = {"capital": int, "risk_pct": float, "max_total_risk_pct": float, "max_po
          "week_news_days": int, "fee_buy_pct": float, "fee_sell_pct": float, "slip_pct": float,
          "max_pos_pct": float, "max_volume_pct": float, "profile_ttl_hours": float,
          "profile_news_days": int, "profile_news_limit": int, "kal_ttl_hours": float,
-         "kal_days": int}
+         "kal_days": int, "screen_ttl_hours": float}
 _BOOL = {"gate"}
 
 

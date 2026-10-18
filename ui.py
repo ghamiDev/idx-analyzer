@@ -83,8 +83,9 @@ _TITLE_ICON = [
       "SKOR HARI INI"), "coin"),
     (("ANGGARAN RISIKO", "RISIKO"), "risk"), (("BERITA", "PEMBERITAHUAN"), "news"),
     (("KONDISI PASAR", "TEKANAN PASAR", "PASAR"), "globe"),
+    (("SARINGAN", "TIDAK LOLOS", "TANPA DATA", "BATAS TAMPIL"), "scan"),
     (("SCANNER", "SKOR", "ANALISA", "HASIL", "KOMPOSISI", "FAKTOR", "PENDUKUNG", "SAHAM"), "chart"),
-    (("LEVEL", "TARGET"), "target"), (("LANGKAH", "MENU"), "compass"),
+    (("LEVEL", "TARGET"), "target"), (("LANGKAH", "MENU", "CONTOH"), "compass"),
     (("KONFIGURASI", "CFG"), "gear"), (("BACKTEST", "SIMULASI", "UJI IKON"), "lab"),
 ]
 

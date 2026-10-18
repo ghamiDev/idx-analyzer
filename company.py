@@ -15,6 +15,12 @@ Yang TIDAK bisa diambil (sudah diuji, bukan asumsi):
     idx.co.id menjawab 403 Cloudflare. Nama pemegang jadi cuma terbaca dari judul berita.
   · Backlog/paparan publik: PDF per emiten, tidak generik.
   · Beta Yahoo untuk .JK kacau (BBCA −0,017) — tidak pernah ditampilkan.
+  · Sebagian emiten (energi/logam/BUMN besar: PGAS, ITMG, MDKA, ADRO, MEDC, AMMN) mengirim LAPORAN
+    KEUANGAN dalam USD sementara harganya rupiah. Yahoo menormalkan harga, EPS dan PER ke rupiah
+    bursa, tapi mengirim laporan keuangan, bookValue, totalCash/Debt dan ebitda dalam mata uang
+    laporan (field financialCurrency). Jadi rasio yang memakai buku/lembar — priceToBook — jadi
+    ribuan kali terlalu besar dan kolom uang di tabel bukan rupiah. Ditangani `skala()`: labelnya
+    yang diikuti, angkanya tidak pernah dikonversi.
 """
 
 import datetime as dt
@@ -43,7 +49,8 @@ INFO_KEYS = ["longName", "sector", "industry", "website", "longBusinessSummary",
              "fiveYearAvgDividendYield", "targetMeanPrice", "targetMedianPrice",
              "targetHighPrice", "targetLowPrice", "numberOfAnalystOpinions", "recommendationKey",
              "recommendationMean", "epsTrailingTwelveMonths", "regularMarketPrice",
-             "previousClose", "lastSplitFactor", "lastSplitDate", "lastDividendDate"]
+             "previousClose", "lastSplitFactor", "lastSplitDate", "lastDividendDate",
+             "financialCurrency", "currency"]
 
 INC_ROWS = ["Total Revenue", "Operating Income", "Net Income", "Diluted EPS", "Gross Profit"]
 BS_ROWS = ["Stockholders Equity", "Total Debt", "Net Debt", "Cash And Cash Equivalents",
@@ -277,6 +284,38 @@ def _yoy(vals):
     return out
 
 
+def _skala(info, ni):
+    """Apakah angka laporan keuangan datang dalam mata uang lain dari harga rupiah.
+
+    Yahoo menormalkan harga, EPS dan PER ke mata uang bursa (IDR), tapi mengirim laporan
+    keuangan plus `bookValue`/`totalCash`/`ebitda` dalam `financialCurrency` emiten — untuk
+    banyak nama energi/logam itu USD. Akibatnya `priceToBook` = harga rupiah dibagi buku dolar
+    (PGAS 10.170,9 'kalipatan') dan tabel keuangan bukan rupiah. Angka TIDAK dikonversi:
+    faktor turunan mencampur trailing-12-bulan dengan setahun buku, jadi yang boleh berubah
+    hanyalah labelnya. Cache lama tidak menyimpan financialCurrency → jalur turunan.
+    """
+    fc = str(info.get("financialCurrency") or "").strip().upper()
+    if fc:
+        return {"uji": True, "pasti": True, "bed": fc != "IDR", "mata": None if fc == "IDR" else fc,
+                "faktor": None, "cara": f"sumber mengirim financialCurrency = {fc}"}
+    cap, per, p2b = num(info.get("marketCap")), num(info.get("trailingPE")), num(info.get("priceToBook"))
+    fakt = (cap / per) / ni if (cap and per and per > 0 and ni and ni > 0) else None
+    ganjil_f = fakt is not None and not 0.25 <= fakt <= 4.0
+    ganjil_p = p2b is not None and not 0.02 <= p2b <= 100.0
+    if ganjil_f or (fakt is None and ganjil_p):
+        return {"uji": True, "pasti": False, "bed": True, "mata": None, "faktor": fakt,
+                "cara": ((f"marketCap ÷ PER ÷ laba FY = {fakt:,.1f}×" if fakt is not None else
+                          "laba/PER tak cukup untuk diuji")
+                         + f" dan PBV sumber {f'{p2b:,.2f}' if p2b is not None else 'n/a'} "
+                         "— di luar pita wajar rupiah; field financialCurrency tidak dikirim sumber")}
+    if fakt is None and p2b is None:
+        return {"uji": False, "pasti": False, "bed": False, "mata": None, "faktor": None,
+                "cara": "tidak bisa diuji (sumber tak mengirim PER maupun PBV)"}
+    return {"uji": True, "pasti": False, "bed": False, "mata": None, "faktor": fakt,
+            "cara": (f"marketCap ÷ PER ÷ laba FY = {fakt:,.2f}×" if fakt
+                     else f"PBV sumber {p2b:,.2f}") + " — masuk akal sebagai rupiah"}
+
+
 def facts(p):
     """Semua angka turunan yang dipakai panel & penanda — dihitung sekali, dibaca di mana-mana."""
     info = p.get("info") or {}
@@ -297,6 +336,7 @@ def facts(p):
         "rows": rows, "years": [r["y"] for r in rows], "px": px, "sector": sek,
         "bank": sek in SEKTOR_BANK,
         "rev": rev, "ni": ni, "eps": _series(rows, "eps"),
+        "skala": _skala(info, next((v for v in ni if v is not None), None)),
         "rev_yoy": _yoy(rev), "ni_yoy": _yoy(ni),
         "margin": [None if not (r and n) else n / r for r, n in zip(rev, ni)],
         "capex": _series(rows, "capex"), "ocf": _series(rows, "ocf"), "fcf": fcf,
@@ -323,6 +363,26 @@ def facts(p):
         "laba_turun": _run_down(ni),
         "err": p.get("err") or {},
     }
+
+
+def lab(f):
+    """Label mata uang untuk angka yang asalnya dari laporan keuangan — 'Rp' hanya bila memang rupiah.
+
+    '≠' dipakai kalau sumber tidak mengirim field mata uang tapi pemeriksaan turunannya bilang
+    angkanya bukan rupiah; begitu labelnya ≠, penjelas ada di penanda & caption tabel.
+    """
+    s = f["skala"]
+    return "Rp" if not s["bed"] else (s["mata"] or "≠")
+
+
+def duit(f, v, dec=2):
+    """Uang dari laporan: label basis ikut pemeriksaan skala, angkanya tidak pernah dikonversi."""
+    return "n/a" if v is None else f"{lab(f)} {rp(v, dec)}"
+
+
+def lembar(f, v):
+    """Uang per lembar yang asalnya dari laporan (EPS, nilai buku/lembar) — desimal ikut basis."""
+    return "n/a" if v is None else f"{lab(f)} {idr2(v)}"
 
 
 def _div_per_year(dv):
@@ -379,6 +439,18 @@ def flags(p, f, cfg=None, temas=None):
     info = p.get("info") or {}
     out = []
 
+    sk = f["skala"]
+    if sk["bed"]:
+        mata = sk["mata"] or "bukan rupiah (mata uangnya tidak dikirim sumber)"
+        out.append(("yellow",
+                    f"DUA MATA UANG DI HALAMAN INI: laporan keuangan {mata} sementara harga rupiah — "
+                    "tabel KEUANGAN, nilai buku/lembar, kas/utang & EBITDA ikut mata uang laporan, "
+                    "jadi tidak bisa dibandingkan langsung dengan harga; PER, ROE dan margin tetap "
+                    f"sebanding karena EPS dinormalkan ke rupiah. Pemeriksaan: {sk['cara']}."))
+    elif not sk["uji"]:
+        out.append(("cyan", f"skala laporan tidak teruji ({sk['cara']}) — kalau EPS di tabel jauh "
+                            "lebih kecil dari harga per lembar, angka itu bukan rupiah"))
+
     if f["earn_date"]:
         try:
             # satu definisi "jarak hari bursa" untuk seluruh aplikasi: kalender.py yang punya,
@@ -399,10 +471,10 @@ def flags(p, f, cfg=None, temas=None):
 
     if f["laba_turun"] >= 2:
         out.append(("red", f"laba bersih turun {f['laba_turun']} tahun beruntun, terakhir "
-                           f"Rp {rp(f['ni'][0])} ({pc(f['ni_yoy'][0])}) — ini tren bisnis, bukan tren harga"))
+                           f"{duit(f, f['ni'][0])} ({pc(f['ni_yoy'][0])}) — ini tren bisnis, bukan tren harga"))
     elif f["laba_turun"] == 1:
         out.append(("yellow", f"laba bersih {f['years'][0][:4]} turun {pc(f['ni_yoy'][0])} menjadi "
-                              f"Rp {rp(f['ni'][0])}"))
+                              f"{duit(f, f['ni'][0])}"))
 
     ry = f["rev_yoy"][0]
     if ry is not None and ry < 0:
@@ -421,7 +493,8 @@ def flags(p, f, cfg=None, temas=None):
         elif nd is not None and nd > 2:
             out.append(("yellow", f"utang bersih {nd:.1f}× EBITDA — masih wajar tapi tidak tipis"))
         elif nd is not None and nd < 0:
-            out.append(("green", f"kas melebihi utang (net debt Rp {rp(nd)}) — ada bantalan saat pasar dikoreksi"))
+            out.append(("green", f"kas melebihi utang (net debt {duit(f, nd)}) — ada bantalan saat pasar "
+                                 "dikoreksi"))
 
     pr = num(info.get("payoutRatio"))
     if pr is not None and pr > 1:
@@ -537,11 +610,17 @@ def _identitas(p, f):
 def _tabel_keuangan(f):
     hdr = ["tahun", "pendapatan", "Δ", "laba bersih", "Δ", "margin", "EPS", "kas operasi", "belanja modal"]
     rows = []
+    asing = f["skala"]["bed"]
     for i, y in enumerate(f["years"][:4]):
-        g = lambda v: f"Rp {rp(v)}" if v is not None else "n/a"
+        g = lambda v: duit(f, v)
+        # EPS per lembar: angka rupiah tetap bulat; angka bermata uang laporan kecil sekali sehingga
+        # dua desimal membuatnya yang rugi tipis terbaca "0.00" — naik ke empat desimal di bawah 0,01
+        ev = f["eps"][i]
+        e = ("n/a" if ev is None else f"{ev:,.4f}" if asing and abs(ev) < 0.01
+             else idr2(ev) if asing else idr(ev))
         rows.append((y[:4], g(f["rev"][i]), tanda(f["rev_yoy"][i]), g(f["ni"][i]),
                      tanda(f["ni_yoy"][i]), pc(f["margin"][i], 1, signed=False),
-                     idr(f["eps"][i]), g(f["ocf"][i]), g(f["capex"][i])))
+                     e, g(f["ocf"][i]), g(f["capex"][i])))
     return hdr, rows
 
 
@@ -560,21 +639,34 @@ def _rasio(p, f):
         v = num(v)
         return "n/a" if v is None else f"{v:.2f}".rstrip("0").rstrip(".") if v < 10 else f"{v:.1f}"
 
-    baris("PER trailing", f1(info.get("trailingPE")),
-          f"forward {f1(info.get('forwardPE'))}" if num(info.get("forwardPE")) else "")
-    baris("PBV", f1(info.get("priceToBook")), f"nilai buku/lembar {idr(info.get('bookValue'))}")
     eq, sh, px = f["equity"], f["shares"], f["px"]
+    asing = f["skala"]["bed"]
     pbv_info, bvps = num(info.get("priceToBook")), (eq / sh) if eq and sh else None
+
+    baris("PER trailing", f1(info.get("trailingPE")),
+          (f"forward {f1(info.get('forwardPE'))}" if num(info.get("forwardPE")) else "")
+          + (" · sumber menormalkan EPS ke rupiah bursa, jadi baris ini tetap sebanding" if asing else ""))
+    if asing:
+        baris("PBV", "[grey62]tidak sebanding[/]",
+              f"nilai buku/lembar {lembar(f, info.get('bookValue'))} sementara harga {idr(px)} rupiah — "
+              f"rasio {f1(pbv_info)} dari sumber adalah hasil bagi dua mata uang, bukan valuasi")
+    else:
+        baris("PBV", f1(pbv_info), f"nilai buku/lembar {idr(info.get('bookValue'))}")
     if bvps and px:
-        pbv_bs = px / bvps
-        baris("PBV dari tabel KEUANGAN", f"{pbv_bs:.2f}",
-              f"ekuitas {rp(eq)} ÷ lembar {rp(sh, 2)} = buku/lembar {idr(bvps)}")
-        if pbv_info and abs(pbv_bs / pbv_info - 1) > 0.05:
-            out.append(f"[yellow]PERHATIAN:[/] {pbv_info:.2f} (sumber) ≠ {pbv_bs:.2f} (neraca di atas) — "
-                       "Yahoo memakai basis ekuitas yang tidak sama dengan baris Stockholders Equity "
-                       "tabel (biasanya di luar kepentingan minoritas, atau periode lebih tua). "
-                       "[bold]Yang bisa diaudit ulang dari angka halaman ini hanyalah versi neraca[/]; "
-                       "selisih >5% berarti salah satu basisnya tidak cocok dengan yang Anda kira.")
+        if asing:
+            baris("PBV dari tabel KEUANGAN", "[grey62]tidak dihitung[/]",
+                  f"ekuitas {duit(f, eq)} ÷ lembar {rp(sh, 2)} = buku/lembar {lembar(f, bvps)} — "
+                  "pembaginya rupiah, yang dibagi bukan; dua mata uang tidak saya satukan jadi satu angka")
+        else:
+            pbv_bs = px / bvps
+            baris("PBV dari tabel KEUANGAN", f"{pbv_bs:.2f}",
+                  f"ekuitas {duit(f, eq)} ÷ lembar {rp(sh, 2)} = buku/lembar {idr(bvps)}")
+            if pbv_info and abs(pbv_bs / pbv_info - 1) > 0.05:
+                out.append(f"[yellow]PERHATIAN:[/] {pbv_info:.2f} (sumber) ≠ {pbv_bs:.2f} (neraca di atas) — "
+                           "Yahoo memakai basis ekuitas yang tidak sama dengan baris Stockholders Equity "
+                           "tabel (biasanya di luar kepentingan minoritas, atau periode lebih tua). "
+                           "[bold]Yang bisa diaudit ulang dari angka halaman ini hanyalah versi neraca[/]; "
+                           "selisih >5% berarti salah satu basisnya tidak cocok dengan yang Anda kira.")
     baris("ROE", pc(info.get("returnOnEquity"), 1, signed=False), "laba / ekuitas")
     baris("ROA", pc(info.get("returnOnAssets"), 1, signed=False), "")
     baris("Margin laba bersih", pc(info.get("profitMargins"), 1, signed=False),
@@ -591,9 +683,10 @@ def _rasio(p, f):
     nd = f["nd_ebitda"]
     baris("Net debt / EBITDA", f"{nd:.1f}×" if nd is not None else "n/a", khusus_bank=True)
     fcf = num(info.get("freeCashflow"))
-    baris("Arus kas bebas", f"Rp {rp(fcf)}" if fcf is not None else "n/a", khusus_bank=True)
-    baris("Kas / total utang", f"Rp {rp(info.get('totalCash'))} / Rp {rp(info.get('totalDebt'))}")
-    baris("EBITDA", f"Rp {rp(info.get('ebitda'))}" if num(info.get("ebitda")) else
+    baris("Arus kas bebas", duit(f, fcf) if fcf is not None else "n/a", khusus_bank=True)
+    baris("Kas / total utang", f"{duit(f, num(info.get('totalCash')))} / "
+                               f"{duit(f, num(info.get('totalDebt')))}")
+    baris("EBITDA", duit(f, num(info.get("ebitda"))) if num(info.get("ebitda")) else
           "n/a (tidak dikirim sumber; bank umumnya kosong)")
     return out
 
@@ -618,9 +711,12 @@ def _analis(p, f):
         out.append("[grey62]Yang ditutupi Yahoo untuk .JK sebagian besar lembaga global; target mereka "
                    "sering tidak memasukkan aksi korporasi lokal. Pakai sebagai rentang, bukan angka.[/]")
     if f["earn_date"]:
-        out.append(f"Rilis laporan berikutnya [bold]{f['earn_date']}[/]"
-                   + (f" · konsensus EPS {idr2(f['est_eps'])} · revenue Rp {rp(f['est_rev'])}"
-                      if f["est_eps"] or f["est_rev"] else ""))
+        kons = ""
+        if f["est_eps"] or f["est_rev"]:
+            kons = (f" · konsensus EPS {lembar(f, f['est_eps'])} · revenue {duit(f, f['est_rev'])}"
+                    + ("  [grey62]konsensus sumber ikut mata uang laporan, bukan rupiah[/]"
+                       if f["skala"]["bed"] else ""))
+        out.append(f"Rilis laporan berikutnya [bold]{f['earn_date']}[/]" + kons)
     return out
 
 
@@ -653,10 +749,10 @@ def _korporasi(p, f):
     bb = [(r["y"][:4], r["buyback"]) for r in f["rows"] if r["buyback"]]
     if terbit:
         out.append("Penerbitan saham baru (jejak right issue/ESOP): "
-                   + " · ".join(f"{y} Rp {rp(v)}" for y, v in reversed(terbit)))
+                   + " · ".join(f"{y} {duit(f, v)}" for y, v in reversed(terbit)))
     if bb:
         out.append("Pembelian kembali saham (kas keluar): "
-                   + " · ".join(f"{y} Rp {rp(abs(v))}" for y, v in reversed(bb)))
+                   + " · ".join(f"{y} {duit(f, abs(v))}" for y, v in reversed(bb)))
     if not terbit and not bb:
         out.append("[grey62]tidak ada baris penerbitan/beli kembali saham di laporan arus kas "
                    f"{len(f['years'])} tahun terakhir[/]")
@@ -747,7 +843,9 @@ def render_profil(p, f, temas, fl, cfg):
 
     hdr, rows = _tabel_keuangan(f)
     if rows:
-        ui.table(hdr, rows, caption="laporan via Yahoo — rupiah; T = triliun, M = miliar, jt = juta · "
+        basis = (f"mata uang laporan = {lab(f)}, BUKAN rupiah"
+                 if f["skala"]["bed"] else "rupiah")
+        ui.table(hdr, rows, caption=f"laporan via Yahoo — {basis}; T = triliun, M = miliar, jt = juta · "
                  "Δ = perubahan vs tahun sebelumnya · EPS per lembar"
                  + ("  ·  bank: baris kas operasi & belanja modal tidak sebanding dengan perusahaan "
                     "non-bank" if f["bank"] else ""))
@@ -768,6 +866,18 @@ def render_profil(p, f, temas, fl, cfg):
                       + ["[grey62]Yang gagal tidak diganti angka karangan — panel terkait "
                          "menampilkan n/a.[/]"], "red")
 
+    sk = f["skala"]
+    sk_txt = ((f"laporan emiten ini datang dalam {lab(f)} sedangkan harga dalam rupiah — kolom "
+               "uang, nilai buku/lembar, PBV, kas/utang, EBITDA dan konsensus sumber ikut mata uang "
+               "laporan dan TIDAK saya konversi (satu-satunya faktor yang bisa diturunkan di sini "
+               "mencampur trailing-12-bulan dengan setahun buku, jadi hasil konversinya tidak bisa "
+               "dipercaya). Yang tetap sebanding: PER, ROE, ROA, margin, D/E, net debt/EBITDA."
+               if sk["bed"] else
+               ("laporan emiten ini dikirim dalam rupiah, satu basis dengan harga." if sk["pasti"] else
+                "tidak ada tanda laporan ini bukan rupiah — tapi itu [bold]perkiraan dari angka[/], "
+                "bukan field mata uang dari sumber." if sk["uji"] else
+                "pemeriksaan tidak conclusive.")) + f" [grey62]{sk['cara']}.[/]")
+
     ui.info_panel("CARA BACA & BATASAN", [
         "· [bold]Tidak ada angka di halaman ini yang masuk skor.[/] Skor tetap murni harga+volume yang "
         "sudah diuji walk-forward. Mencampurkan rasio yang belum diuji akan membuat klaim 'keyakinan = "
@@ -775,6 +885,7 @@ def render_profil(p, f, temas, fl, cfg):
         "· Laporan keuangan datang dari Yahoo, BUKAN IDX. Cakupannya luas untuk .JK (diuji dari LQ45 "
         "sampai saham kecil) tapi bisa [bold]terlambat satu periode[/] atau direvisi; tanggal rilis "
         "berikutnya ada di panel VALUASI.",
+        "· [bold]Skala mata uang diperiksa, tidak diasumsikan.[/] " + sk_txt,
         "· [bold]Bank & konglomerasi:[/] rasio arus kas, D/E, current ratio tidak bermakna. Beta Yahoo "
         "untuk .JK kacau (BBCA −0,017) sehingga tidak pernah ditampilkan.",
         "· [bold]Proyek/rencana/aksi korporasi[/] dibaca dari [bold]judul[/] berita lewat kata kunci. "
@@ -838,9 +949,11 @@ def peek(ticker, cfg):
         out.append(f"[yellow]profil {code} berumur {umur / 24:.1f} hari[/] — ambil ulang dengan "
                    f"[bold]idx.py profil {code} --refresh[/]")
     thn = (f["years"][0][:4] if f["years"] else "?")
+    p2b = num(info.get("priceToBook"))
     ringkas = [f"PER {num(info.get('trailingPE')):.1f} [grey62](12 bln)[/]"
                if num(info.get("trailingPE")) else None,
-               f"PBV {num(info.get('priceToBook')):.2f}" if num(info.get("priceToBook")) else None,
+               "PBV [red]tidak sebanding[/]" if f["skala"]["bed"] else
+               (f"PBV {p2b:.2f}" if p2b else None),
                f"ROE {pc(info.get('returnOnEquity'), 1, signed=False)} [grey62](12 bln)[/]"
                if num(info.get('returnOnEquity')) else None,
                f"div {f['div_yield']:.1f}% [grey62](12 bln)[/]" if f["div_yield"] else None,
